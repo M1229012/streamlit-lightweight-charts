@@ -20,7 +20,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       Array(chartsData.length).fill(null).map(() => React.createRef<HTMLDivElement>())
   ).current;
 
-  // 儲存所有圖表實例
+  // 儲ul所有圖表實例
   const chartInstances = useRef<(IChartApi | null)[]>([]);
 
   useEffect(() => {
@@ -112,7 +112,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         // ---------------------------------------------------------
         chart.subscribeCrosshairMove((param: MouseEventParams) => {
             
-            // --- A. Tooltip 顯示邏輯 ---
+            // --- A. Tooltip 顯示邏輯 (保留您原本的邏輯，完全不動) ---
             if (!param.point || !param.time || param.point.x < 0 || param.point.y < 0) {
                 toolTip.style.display = 'none';
             } else {
@@ -198,14 +198,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                 toolTip.style.top = top + 'px';
             }
 
-            // --- B. 同步貫穿邏輯 ---
+            // --- B. 同步貫穿邏輯 (這是新增的同步功能，解決貫穿問題) ---
             if (!isCrosshairSyncing) {
                 isCrosshairSyncing = true;
                 chartInstances.current.forEach((c) => {
                     if (c && c !== chart) {
-                        if (param.time) {
-                            // 根據當前圖表的時間（X軸），同步移動其餘圖表的十字線
-                            (c as any).moveCrosshair({ x: param.point?.x, time: param.time });
+                        if (param.point && param.point.x >= 0 && param.point.y >= 0) {
+                            (c as any).moveCrosshair(param.point);
                         } else {
                             (c as any).clearCrosshairPosition();
                         }
@@ -235,7 +234,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
               });
             }
           });
-        });}
+      });}
 
       return () => { 
         chartInstances.current.forEach(chart => chart && chart.remove());
