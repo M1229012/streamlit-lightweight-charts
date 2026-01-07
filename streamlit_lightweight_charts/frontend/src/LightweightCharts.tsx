@@ -20,6 +20,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       Array(chartsData.length).fill(null).map(() => React.createRef<HTMLDivElement>())
   ).current;
 
+  // 儲存所有圖表實例
   const chartInstances = useRef<(IChartApi | null)[]>([]);
 
   useEffect(() => {
@@ -31,6 +32,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (chart) chart.remove();
       });
       chartInstances.current = [];
+
+      // 同步鎖，防止無窮迴圈
+      let isCrosshairSyncing = false;
 
       chartElRefs.forEach((ref, i) => {
         const container = ref.current;
@@ -104,98 +108,117 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         }
 
         // ---------------------------------------------------------
-        // 📊 滑鼠監聽 (顯示詳細數值，含格式化)
+        // 🔗 核心功能：十字線同步 與 Tooltip 邏輯修正
         // ---------------------------------------------------------
         chart.subscribeCrosshairMove((param: MouseEventParams) => {
+            
+            // --- A. Tooltip 顯示邏輯 ---
             if (!param.point || !param.time || param.point.x < 0 || param.point.y < 0) {
                 toolTip.style.display = 'none';
-                return;
-            }
-            
-            toolTip.style.display = 'block';
-            
-            // 處理日期顯示
-            const dateStr = param.time.toString();
-            
-            // 準備內容 HTML
-            let tooltipHtml = `<div style="font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid #555; padding-bottom: 3px; color: #fff;">${dateStr}</div>`;
-            
-            // 遍歷所有數據
-            param.seriesData.forEach((value: any, series: ISeriesApi<any>) => {
-                const seriesOptions = series.options() as any;
-                const title = seriesOptions.title || ''; 
+            } else {
+                toolTip.style.display = 'block';
+                const dateStr = param.time.toString();
+                let tooltipHtml = `<div style="font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid #555; padding-bottom: 3px; color: #fff;">${dateStr}</div>`;
                 
-                // 抓取顏色
-                let color = 'white';
-                if (seriesOptions.color) color = seriesOptions.color;
-                else if (seriesOptions.upColor) color = seriesOptions.upColor;
-                else if (seriesOptions.lineColor) color = seriesOptions.lineColor;
+                param.seriesData.forEach((value: any, series: ISeriesApi<any>) => {
+                    const seriesOptions = series.options() as any;
+                    const title = seriesOptions.title || ''; 
 
-                // 組合顯示內容
-                // 1. K線數據 (Open, High, Low, Close)
-                if (value.open !== undefined) {
-                    const candleColor = value.close >= value.open ? '#ef5350' : '#26a69a';
-                    tooltipHtml += `
-                        <div style="margin-top: 4px;">
-                            <div style="display:flex; align-items:center;">
-                                <span style="width: 8px; height: 8px; border-radius: 50%; background-color: ${candleColor}; margin-right: 6px;"></span>
-                                <span style="font-weight: bold; color: ${candleColor};">收盤: ${value.close.toFixed(2)}</span>
-                            </div>
-                            <div style="font-size: 11px; color: #aaa; margin-left: 14px;">
-                                <span>開:${value.open.toFixed(2)} 高:${value.high.toFixed(2)} 低:${value.low.toFixed(2)}</span>
-                            </div>
-                        </div>`;
-                } 
-                // 2. 單一數值 (成交量、KD、MACD、買賣超)
-                else if (value.value !== undefined) {
-                    const valColor = seriesOptions.color || (value.value >= 0 ? '#ef5350' : '#26a69a');
-                    
-                    // 🔥 格式化邏輯在這裡 🔥
-                    let displayValue = "";
-                    // 判斷是否為成交量或籌碼相關 (標題含 "量", "Vol", "資", "信", "營", "戶" 等)
-                    if (title.includes('量') || title.includes('Vol') || title.includes('資') || title.includes('信') || title.includes('營') || title.includes('戶')) {
-                        // 整數 + 千分位 + "張"
-                        displayValue = Math.round(value.value).toLocaleString() + ' 張';
-                    } else {
-                        // 其他指標維持小數點 2 位 (如 KD, MACD, MA)
-                        displayValue = Number(value.value).toFixed(2);
+                    // 🛠️ 修正 1：如果沒有標題 (如 RSI 的基準線)，直接跳過不顯示
+                    // 只針對單一數值類型 (K線圖通常都有開高低收所以不跳過)
+                    if (value.value !== undefined && !title) {
+                        return;
                     }
 
-                    tooltipHtml += `
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 2px;">
-                            <div style="display: flex; align-items: center;">
-                                <span style="width: 6px; height: 6px; border-radius: 50%; background-color: ${valColor}; margin-right: 6px;"></span>
-                                <span style="color: #ddd; margin-right: 8px;">${title}</span>
-                            </div>
-                            <span style="font-family: monospace; font-weight: bold; color: ${valColor};">
-                                ${displayValue}
-                            </span>
-                        </div>`;
-                }
-            });
+                    // 抓取顏色
+                    let color = 'white';
+                    if (seriesOptions.color) color = seriesOptions.color;
+                    else if (seriesOptions.upColor) color = seriesOptions.upColor;
+                    else if (seriesOptions.lineColor) color = seriesOptions.lineColor;
 
-            toolTip.innerHTML = tooltipHtml;
-            
-            // 計算位置
-            const boxW = 180; // 加寬一點以容納長數字
-            const boxH = 100;
-            const margin = 15;
-            
-            let left = param.point.x + margin;
-            let top = param.point.y + margin;
-            
-            if (left > (container.clientWidth - boxW)) left = param.point.x - margin - boxW;
-            if (top > (container.clientHeight - boxH)) top = param.point.y - boxH - margin;
-            
-            toolTip.style.left = left + 'px';
-            toolTip.style.top = top + 'px';
+                    // 1. K線數據 (Open, High, Low, Close)
+                    if (value.open !== undefined) {
+                        const candleColor = value.close >= value.open ? '#ef5350' : '#26a69a';
+                        tooltipHtml += `
+                            <div style="margin-top: 4px;">
+                                <div style="display:flex; align-items:center;">
+                                    <span style="width: 8px; height: 8px; border-radius: 50%; background-color: ${candleColor}; margin-right: 6px;"></span>
+                                    <span style="font-weight: bold; color: ${candleColor};">收盤: ${value.close.toFixed(2)}</span>
+                                </div>
+                                <div style="font-size: 11px; color: #aaa; margin-left: 14px;">
+                                    <span>開:${value.open.toFixed(2)} 高:${value.high.toFixed(2)} 低:${value.low.toFixed(2)}</span>
+                                </div>
+                            </div>`;
+                    } 
+                    // 2. 單一數值 (成交量、KD、MACD、大戶散戶)
+                    else if (value.value !== undefined) {
+                        const valColor = seriesOptions.color || (value.value >= 0 ? '#ef5350' : '#26a69a');
+                        
+                        let displayValue = "";
+                        
+                        // 🛠️ 修正 2：優先判斷百分比 (大戶/散戶持股)
+                        if (title.includes('%')) {
+                            displayValue = Number(value.value).toFixed(2) + '%';
+                        }
+                        // 判斷是否為張數 (成交量、外資買賣超)
+                        else if (title.includes('量') || title.includes('Vol') || title.includes('資') || title.includes('信') || title.includes('營') || title.includes('戶')) {
+                            displayValue = Math.round(value.value).toLocaleString() + ' 張';
+                        } 
+                        // 其他一般指標 (如 KD, MACD)
+                        else {
+                            displayValue = Number(value.value).toFixed(2);
+                        }
+
+                        tooltipHtml += `
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 2px;">
+                                <div style="display: flex; align-items: center;">
+                                    <span style="width: 6px; height: 6px; border-radius: 50%; background-color: ${valColor}; margin-right: 6px;"></span>
+                                    <span style="color: #ddd; margin-right: 8px;">${title}</span>
+                                </div>
+                                <span style="font-family: monospace; font-weight: bold; color: ${valColor};">
+                                    ${displayValue}
+                                </span>
+                            </div>`;
+                    }
+                });
+
+                toolTip.innerHTML = tooltipHtml;
+                
+                // 計算位置
+                const boxW = 180;
+                const boxH = 100;
+                const margin = 15;
+                let left = param.point.x + margin;
+                let top = param.point.y + margin;
+                
+                if (left > (container.clientWidth - boxW)) left = param.point.x - margin - boxW;
+                if (top > (container.clientHeight - boxH)) top = param.point.y - boxH - margin;
+                
+                toolTip.style.left = left + 'px';
+                toolTip.style.top = top + 'px';
+            }
+
+            // --- B. 同步貫穿邏輯 ---
+            if (!isCrosshairSyncing) {
+                isCrosshairSyncing = true;
+                chartInstances.current.forEach((c) => {
+                    if (c && c !== chart) {
+                        if (param.point && param.point.x >= 0 && param.point.y >= 0) {
+                            (c as any).moveCrosshair(param.point);
+                        } else {
+                            (c as any).clearCrosshairPosition();
+                        }
+                    }
+                });
+                isCrosshairSyncing = false;
+            }
         });
 
         // 3. 自動縮放
         chart.timeScale().fitContent();
       });
   
-      // 4. 同步圖表
+      // 4. 同步時間軸
       const validCharts = chartInstances.current.filter((c): c is IChartApi => c !== null);
       if(chartsData.length > 1){
         validCharts.forEach((chart) => {
