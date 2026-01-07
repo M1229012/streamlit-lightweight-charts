@@ -2,6 +2,7 @@
   "name": "streamlit_lightweight_charts",
   "version": "0.0.8",
   "private": true,
+  "homepage": ".",
   "dependencies": {
     "@types/jest": "^27.0.0",
     "@types/node": "^16.0.0",
