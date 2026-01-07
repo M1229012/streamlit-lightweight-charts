@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="streamlit-lightweight-charts",
-    version="0.7.21",
+    version="0.7.22",
     author="M1229012",
     author_email="joe.rosa@itpmngt.co.uk",
     license="MIT",
