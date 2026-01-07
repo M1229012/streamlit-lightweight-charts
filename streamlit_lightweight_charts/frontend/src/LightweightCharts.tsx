@@ -25,34 +25,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
   useEffect(() => {
       // 基本檢查
-      if (chartElRefs.some((ref) => !ref.current) || !chartsContainerRef.current) return;
-
-      const mainContainer = chartsContainerRef.current;
+      if (chartElRefs.some((ref) => !ref.current)) return;
 
       // 清理舊圖表
       chartInstances.current.forEach(chart => {
           if (chart) chart.remove();
       });
       chartInstances.current = [];
-
-      // ---------------------------------------------------------
-      // 🎨 全局浮動 Tooltip (放到最外層容器，確保貫穿顯示)
-      // ---------------------------------------------------------
-      let toolTip = mainContainer.querySelector('.global-tooltip') as HTMLDivElement;
-      if (!toolTip) {
-          toolTip = document.createElement('div');
-          toolTip.className = 'global-tooltip';
-          Object.assign(toolTip.style, {
-              width: 'auto', height: 'auto', position: 'absolute', display: 'none',
-              padding: '10px', boxSizing: 'border-box', fontSize: '12px', textAlign: 'left',
-              zIndex: '2000', pointerEvents: 'none', border: '1px solid #444',
-              borderRadius: '6px', fontFamily: 'sans-serif',
-              background: 'rgba(20, 20, 20, 0.9)', color: '#ececec',
-              boxShadow: '0 4px 8px rgba(0,0,0,0.6)'
-          });
-          mainContainer.style.position = 'relative';
-          mainContainer.appendChild(toolTip);
-      }
 
       // 同步鎖，防止無窮迴圈
       let isCrosshairSyncing = false;
@@ -67,6 +46,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             height: 300,
             width: container.clientWidth || 600,
             ...chartsData[i].chart,
+            // 強制設定圖表背景為透明或深色
             layout: { 
                 background: { type: 'solid', color: 'transparent' }, 
                 textColor: '#d1d4dc',
@@ -76,7 +56,38 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         );
         chartInstances.current[i] = chart;
 
-        // 2. 加入 Series 數據 (這部分完全保留您原本的邏輯)
+        // ---------------------------------------------------------
+        // 🎨 浮動 Tooltip (深色風格)
+        // ---------------------------------------------------------
+        let toolTip = container.querySelector('.floating-tooltip') as HTMLDivElement;
+        if (!toolTip) {
+            toolTip = document.createElement('div');
+            toolTip.className = 'floating-tooltip';
+            Object.assign(toolTip.style, {
+                width: 'auto',
+                height: 'auto',
+                position: 'absolute',
+                display: 'none',
+                padding: '8px',
+                boxSizing: 'border-box',
+                fontSize: '12px',
+                textAlign: 'left',
+                zIndex: '1000',
+                top: '12px',
+                left: '12px',
+                pointerEvents: 'none',
+                border: '1px solid #444',
+                borderRadius: '4px',
+                fontFamily: 'sans-serif',
+                background: 'rgba(20, 20, 20, 0.9)',
+                color: '#ececec',
+                boxShadow: '0 2px 5px rgba(0,0,0,0.5)'
+            });
+            container.style.position = 'relative';
+            container.appendChild(toolTip);
+        }
+
+        // 2. 加入 Series 數據
         for (const series of chartsData[i].series){
           let chartSeries;
           switch(series.type) {
@@ -97,46 +108,44 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         }
 
         // ---------------------------------------------------------
-        // 🔗 核心修改：全局十字線同步 與 統一 Tooltip 顯示
+        // 🔗 核心功能：十字線同步 與 Tooltip 邏輯修正 (實現貫穿效果)
         // ---------------------------------------------------------
         chart.subscribeCrosshairMove((param: MouseEventParams) => {
+            
+            // --- A. 全域數值收集與 Tooltip 顯示 ---
             if (!param.point || !param.time || param.point.x < 0 || param.point.y < 0) {
-                // 如果目前的圖表滑鼠移出了，隱藏 Tooltip
-                if (!isCrosshairSyncing) toolTip.style.display = 'none';
+                // 如果目前的圖表滑鼠移出了，隱藏此分區的 Tooltip
+                toolTip.style.display = 'none';
             } else {
                 toolTip.style.display = 'block';
                 const dateStr = param.time.toString();
-                let tooltipHtml = `<div style="font-weight: bold; margin-bottom: 6px; border-bottom: 1px solid #555; padding-bottom: 4px; color: #fff; font-size: 13px;">${dateStr}</div>`;
+                let tooltipHtml = `<div style="font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid #555; padding-bottom: 3px; color: #fff;">${dateStr}</div>`;
                 
-                // 🔥 關鍵步驟：遍歷「所有」圖表實例，抓取同一時間點的數據
+                // 🔥 關鍵：收集所有分區圖表在目前時間點的數據
                 chartInstances.current.forEach((inst) => {
                     if (!inst) return;
-                    // 取得該圖表在目前時間點的數據
-                    const data = inst.seriesData(); 
+                    const data = inst.seriesData();
                     data.forEach((value: any, series: ISeriesApi<any>) => {
                         const seriesOptions = series.options() as any;
                         const title = seriesOptions.title || ''; 
 
-                        if (value.value !== undefined && !title) return; // 隱藏基準線
+                        if (value.value !== undefined && !title) return;
 
                         let color = seriesOptions.color || seriesOptions.upColor || seriesOptions.lineColor || 'white';
 
-                        // 1. 處理 K 線
                         if (value.open !== undefined) {
                             const candleColor = value.close >= value.open ? '#ef5350' : '#26a69a';
                             tooltipHtml += `
-                                <div style="margin: 4px 0;">
+                                <div style="margin-top: 4px;">
                                     <div style="display:flex; align-items:center;">
                                         <span style="width: 8px; height: 8px; border-radius: 50%; background-color: ${candleColor}; margin-right: 6px;"></span>
                                         <span style="font-weight: bold; color: ${candleColor};">收盤: ${value.close.toFixed(2)}</span>
                                     </div>
                                     <div style="font-size: 11px; color: #aaa; margin-left: 14px;">
-                                        開:${value.open.toFixed(2)} 高:${value.high.toFixed(2)} 低:${value.low.toFixed(2)}
+                                        <span>開:${value.open.toFixed(2)} 高:${value.high.toFixed(2)} 低:${value.low.toFixed(2)}</span>
                                     </div>
                                 </div>`;
-                        } 
-                        // 2. 處理副圖數據 (成交量、KD、MACD、持股)
-                        else if (value.value !== undefined) {
+                        } else if (value.value !== undefined) {
                             let displayValue = "";
                             if (title.includes('%')) {
                                 displayValue = Number(value.value).toFixed(2) + '%';
@@ -145,11 +154,12 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                             } else {
                                 displayValue = Number(value.value).toFixed(2);
                             }
+
                             tooltipHtml += `
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 2px;">
                                     <div style="display: flex; align-items: center;">
                                         <span style="width: 6px; height: 6px; border-radius: 50%; background-color: ${color}; margin-right: 6px;"></span>
-                                        <span style="color: #ddd; margin-right: 12px;">${title}</span>
+                                        <span style="color: #ddd; margin-right: 8px;">${title}</span>
                                     </div>
                                     <span style="font-family: monospace; font-weight: bold; color: ${color};">${displayValue}</span>
                                 </div>`;
@@ -159,20 +169,18 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
                 toolTip.innerHTML = tooltipHtml;
                 
-                // 計算位置 (相對於 mainContainer)
-                const rect = mainContainer.getBoundingClientRect();
-                const margin = 15;
-                let left = param.point.x + margin + container.offsetLeft;
-                let top = param.point.y + margin + container.offsetTop;
-                
-                // 防止跑出右邊界
-                if (left > (mainContainer.clientWidth - 190)) left -= (190 + margin * 2);
+                // 計算位置
+                const boxW = 180, boxH = 150, margin = 15;
+                let left = param.point.x + margin;
+                let top = param.point.y + margin;
+                if (left > (container.clientWidth - boxW)) left = param.point.x - margin - boxW;
+                if (top > (container.clientHeight - boxH)) top = param.point.y - boxH - margin;
                 
                 toolTip.style.left = left + 'px';
                 toolTip.style.top = top + 'px';
             }
 
-            // --- B. 同步貫穿邏輯 ---
+            // --- B. 同步貫穿邏輯 (十字線延伸到底下副圖) ---
             if (!isCrosshairSyncing) {
                 isCrosshairSyncing = true;
                 chartInstances.current.forEach((c) => {
@@ -217,7 +225,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     }, [chartsData]);
 
     return (
-      <div ref={chartsContainerRef} style={{ position: 'relative' }}>
+      <div ref={chartsContainerRef}>
         {chartElRefs.map((ref, i) => (
           <div ref={ref} id={`chart-${i}`} key={i} />
         ))}
