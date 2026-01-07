@@ -203,7 +203,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                 isCrosshairSyncing = true;
                 chartInstances.current.forEach((c) => {
                     if (c && c !== chart) {
-                        if (param.point && param.point.x >= 0 && param.point.y >= 0) {
+                        if (param.point && param.point.x >= 0) {
+                            // 這裡只傳遞座標，讓所有圖表顯示十字線
+                            c.setCrosshairPosition(param.point.x, param.point.y, param.seriesData.get(Array.from(param.seriesData.keys())[0])); 
+                            // 在某些版本中，直接使用 moveCrosshair 效果最佳
                             (c as any).moveCrosshair(param.point);
                         } else {
                             (c as any).clearCrosshairPosition();
@@ -234,7 +237,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
               });
             }
           });
-      });}
+        });}
 
       return () => { 
         chartInstances.current.forEach(chart => chart && chart.remove());
