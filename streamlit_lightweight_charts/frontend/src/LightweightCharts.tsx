@@ -36,7 +36,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         const container = ref.current;
         if (!container) return;
 
-        // 1. 建立圖表 (保留原本邏輯)
+        // 1. 建立圖表
         const chart = createChart(
           container, {
             height: 300,
@@ -46,7 +46,19 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         );
         chartInstances.current[i] = chart;
 
-        // --- 2. 新增 Tooltip DOM 元素 (插入到這裡) ---
+        // ---------------------------------------------------------
+        // 🔥 新增功能：左上角三行圖例 (Legend) DOM 建立
+        // ---------------------------------------------------------
+        const legend = document.createElement('div');
+        // 使用 cssText 設定樣式 (參照您提供的設定)
+        legend.style.cssText = `position: absolute; left: 12px; top: 12px; z-index: 1; font-size: 14px; font-family: sans-serif; line-height: 18px; font-weight: 300; pointer-events: none;`;
+        legend.style.color = 'black'; 
+        container.style.position = 'relative'; // 確保 absolute 定位正確
+        container.appendChild(legend);
+
+        // ---------------------------------------------------------
+        // 原有功能：跟隨滑鼠的浮動 Tooltip DOM 建立
+        // ---------------------------------------------------------
         let toolTip = container.querySelector('.floating-tooltip') as HTMLDivElement;
         if (!toolTip) {
             toolTip = document.createElement('div');
@@ -59,11 +71,82 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                 fontFamily: 'sans-serif', background: 'rgba(255, 255, 255, 0.95)',
                 color: 'black', borderColor: '#2962FF', boxShadow: '0 2px 5px rgba(0,0,0,0.2)'
             });
-            container.style.position = 'relative';
             container.appendChild(toolTip);
         }
 
-        // --- 3. 新增 Tooltip 監聽事件 (v4 寫法) ---
+        // 用來儲存此圖表中的所有 Series，供 Legend 使用
+        const chartSeriesList: ISeriesApi<any>[] = [];
+
+        // 4. 加入 Series 數據
+        for (const series of chartsData[i].series){
+          let chartSeries;
+          switch(series.type) {
+            case 'Area': chartSeries = chart.addAreaSeries(series.options); break;
+            case 'Bar': chartSeries = chart.addBarSeries(series.options); break;
+            case 'Baseline': chartSeries = chart.addBaselineSeries(series.options); break;
+            case 'Candlestick': chartSeries = chart.addCandlestickSeries(series.options); break;
+            case 'Histogram': chartSeries = chart.addHistogramSeries(series.options); break;
+            case 'Line': chartSeries = chart.addLineSeries(series.options); break;
+            default: continue;
+          }
+
+          if (chartSeries) {
+              if(series.priceScale) chart.priceScale(series.options.priceScaleId || '').applyOptions(series.priceScale);
+              chartSeries.setData(series.data);
+              if(series.markers) chartSeries.setMarkers(series.markers);
+              
+              // 🔥 將建立好的 Series 存起來
+              chartSeriesList.push(chartSeries);
+          }
+        }
+
+        // ---------------------------------------------------------
+        // 🔥 新增功能：左上角圖例 (Legend) 更新邏輯
+        // ---------------------------------------------------------
+        const symbolName = chartsData[i].title || ''; // 使用圖表標題，若無則留空
+
+        const getLastBar = (series: ISeriesApi<any>) => {
+            // @ts-ignore: library type definition might be slightly different depending on version
+            const lastIndex = series.dataByIndex(Number.MAX_SAFE_INTEGER, -1);
+             // @ts-ignore
+            return series.dataByIndex(lastIndex);
+        };
+        
+        const formatPrice = (price: number) => (Math.round(price * 100) / 100).toFixed(2);
+        
+        const setTooltipHtml = (name: string, date: string, price: string) => {
+            legend.innerHTML = `<div style="font-size: 24px; margin: 4px 0px;">${name}</div><div style="font-size: 22px; margin: 4px 0px;">${price}</div><div>${date}</div>`;
+        };
+
+        const updateLegend = (param: MouseEventParams) => {
+            const validCrosshairPoint = !(
+                param === undefined || param.time === undefined || param.point === undefined || param.point.x < 0 || param.point.y < 0
+            );
+
+            // 預設抓取第一個 Series 當作 Legend 的主要數據來源
+            const mainSeries = chartSeriesList[0];
+            if (!mainSeries) return;
+
+            const bar = validCrosshairPoint ? param.seriesData.get(mainSeries) : getLastBar(mainSeries);
+            
+            if (bar) {
+                const time = bar.time.toString();
+                // 判斷是單一 value 還是 OHLC close
+                const price = (bar as any).value !== undefined ? (bar as any).value : (bar as any).close;
+                const formattedPrice = formatPrice(price);
+                setTooltipHtml(symbolName, time, formattedPrice);
+            }
+        };
+
+        // 訂閱 Legend 更新
+        chart.subscribeCrosshairMove(updateLegend);
+        // 初始化一次
+        updateLegend({} as MouseEventParams);
+
+
+        // ---------------------------------------------------------
+        // 原有功能：浮動 Tooltip 監聽事件
+        // ---------------------------------------------------------
         chart.subscribeCrosshairMove((param: MouseEventParams) => {
             if (!param.point || !param.time || param.point.x < 0 || param.point.y < 0) {
                 toolTip.style.display = 'none';
@@ -74,9 +157,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             const dateStr = param.time.toString();
             let priceInfo = "";
             
-            // 讀取數據 (支援 K棒與一般線圖)
             param.seriesData.forEach((value: any, series: ISeriesApi<any>) => {
-                // K線數據 (Open, High, Low, Close)
                 if (value.open !== undefined) {
                     const color = value.close >= value.open ? '#ef5350' : '#26a69a';
                     priceInfo += `
@@ -87,16 +168,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                             <div style="display:flex;justify-content:space-between"><span>低:</span><span>${value.low.toFixed(2)}</span></div>
                         </div>`;
                 } 
-                // 單一數值 (Line, Area, Histogram 等)
                 else if (value.value !== undefined) {
-                    // 如果需要顯示成交量或其他指標數值，可以取消下面註解
                     // priceInfo += `<div style="font-size: 12px;">值: ${value.value.toFixed(2)}</div>`;
                 }
             });
 
             toolTip.innerHTML = `<div style="color:#333;font-weight:bold;margin-bottom:4px">${dateStr}</div>${priceInfo}`;
             
-            // 計算位置 (防止超出邊界)
             const boxW = 150, boxH = 130, margin = 15;
             let left = param.point.x + margin;
             let top = param.point.y + margin;
@@ -107,31 +185,11 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             toolTip.style.top = top + 'px';
         });
 
-        // 4. 加入 Series 數據 (保留原本邏輯)
-        for (const series of chartsData[i].series){
-          let chartSeries;
-          switch(series.type) {
-            case 'Area': chartSeries = chart.addAreaSeries(series.options); break;
-            case 'Bar': chartSeries = chart.addBarSeries(series.options); break;
-            case 'Baseline': chartSeries = chart.addBaselineSeries(series.options); break;
-            case 'Candlestick': chartSeries = chart.addCandlestickSeries(series.options); break;
-            case 'Histogram': chartSeries = chart.addHistogramSeries(series.options); break;
-            case 'Line': chartSeries = chart.addLineSeries(series.options); break;
-            default: return;
-          }
-
-          if (chartSeries) {
-              if(series.priceScale) chart.priceScale(series.options.priceScaleId || '').applyOptions(series.priceScale);
-              chartSeries.setData(series.data);
-              if(series.markers) chartSeries.setMarkers(series.markers);
-          }
-        }
-
-        // 5. 自動縮放 (保留原本邏輯)
+        // 5. 自動縮放
         chart.timeScale().fitContent();
       });
   
-      // 6. 同步圖表 (保留原本邏輯)
+      // 6. 同步圖表
       const validCharts = chartInstances.current.filter((c): c is IChartApi => c !== null);
       if(chartsData.length > 1){
         validCharts.forEach((chart) => {
