@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="streamlit-lightweight-charts",
-    version="0.7.23",  # ⬆️ 我幫您升級到 23 版，確保留意更新
+    version="0.7.25",  # ⬆️ 再次升級版本號，確保雲端更新
     author="M1229012",
     author_email="joe.rosa@itpmngt.co.uk",
     license="MIT",
@@ -21,12 +21,12 @@ setuptools.setup(
     packages=['streamlit_lightweight_charts'],
     package_data={
         'streamlit_lightweight_charts': [
-            'frontend/build/*',           # 包含 build 下所有檔案
-            'frontend/build/static/js/*', # 包含 JS
-            'frontend/build/static/css/*' # 包含 CSS
+            'frontend/build/*',
+            'frontend/build/static/js/*',
+            'frontend/build/static/css/*'
         ],
     },
-    include_package_data=True, # 這行一定要是 True，才會讀取 MANIFEST.in
+    include_package_data=False,  # 🚨 關鍵！改成 False，強制它讀上面的路徑
     python_requires=">=3.6",
     install_requires=[
         "streamlit >= 0.62",
