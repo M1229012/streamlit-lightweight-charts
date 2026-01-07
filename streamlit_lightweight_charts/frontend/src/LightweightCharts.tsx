@@ -42,7 +42,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             height: 300,
             width: container.clientWidth || 600,
             ...chartsData[i].chart,
-            // 強制設定圖表背景為透明或深色，以防萬一
+            // 強制設定圖表背景為透明或深色
             layout: { 
                 background: { type: 'solid', color: 'transparent' }, 
                 textColor: '#d1d4dc',
@@ -53,20 +53,15 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         chartInstances.current[i] = chart;
 
         // ---------------------------------------------------------
-        // 🗑️ 已刪除：原本的左上角三行 Legend 程式碼
-        // ---------------------------------------------------------
-
-        // ---------------------------------------------------------
-        // 🎨 修改功能：浮動 Tooltip (改成深色風格)
+        // 🎨 浮動 Tooltip (深色風格)
         // ---------------------------------------------------------
         let toolTip = container.querySelector('.floating-tooltip') as HTMLDivElement;
         if (!toolTip) {
             toolTip = document.createElement('div');
             toolTip.className = 'floating-tooltip';
-            // 🔥 設定為深色背景樣式
             Object.assign(toolTip.style, {
-                width: 'auto',       // 寬度自動
-                height: 'auto',      // 高度自動
+                width: 'auto',
+                height: 'auto',
                 position: 'absolute',
                 display: 'none',
                 padding: '8px',
@@ -77,11 +72,11 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                 top: '12px',
                 left: '12px',
                 pointerEvents: 'none',
-                border: '1px solid #444',            // 深灰色邊框
+                border: '1px solid #444',
                 borderRadius: '4px',
                 fontFamily: 'sans-serif',
-                background: 'rgba(20, 20, 20, 0.9)', // 🔥 深色半透明背景
-                color: '#ececec',                    // 🔥 淺灰色/白色文字
+                background: 'rgba(20, 20, 20, 0.9)',
+                color: '#ececec',
                 boxShadow: '0 2px 5px rgba(0,0,0,0.5)'
             });
             container.style.position = 'relative';
@@ -109,7 +104,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         }
 
         // ---------------------------------------------------------
-        // 📊 修改功能：滑鼠監聽 (顯示所有副圖數值)
+        // 📊 滑鼠監聽 (顯示詳細數值，含格式化)
         // ---------------------------------------------------------
         chart.subscribeCrosshairMove((param: MouseEventParams) => {
             if (!param.point || !param.time || param.point.x < 0 || param.point.y < 0) {
@@ -120,27 +115,26 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             toolTip.style.display = 'block';
             
             // 處理日期顯示
-            const dateStr = param.time.toString(); // 根據傳入格式顯示日期
+            const dateStr = param.time.toString();
             
             // 準備內容 HTML
             let tooltipHtml = `<div style="font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid #555; padding-bottom: 3px; color: #fff;">${dateStr}</div>`;
             
-            // 🔥 遍歷所有數據 (K線、成交量、KD、MACD 等都會在這裡)
+            // 遍歷所有數據
             param.seriesData.forEach((value: any, series: ISeriesApi<any>) => {
-                // 取得該線圖的設定 (嘗試抓取 title 和 顏色)
                 const seriesOptions = series.options() as any;
-                const title = seriesOptions.title || ''; // 如果 Python 有傳 title，這裡就會顯示 (如 "Vol", "MA20")
+                const title = seriesOptions.title || ''; 
                 
-                // 嘗試抓取顏色 (不同圖表類型的顏色屬性不同)
+                // 抓取顏色
                 let color = 'white';
                 if (seriesOptions.color) color = seriesOptions.color;
-                else if (seriesOptions.upColor) color = seriesOptions.upColor; // K線或Histogram
+                else if (seriesOptions.upColor) color = seriesOptions.upColor;
                 else if (seriesOptions.lineColor) color = seriesOptions.lineColor;
 
                 // 組合顯示內容
                 // 1. K線數據 (Open, High, Low, Close)
                 if (value.open !== undefined) {
-                    const candleColor = value.close >= value.open ? '#ef5350' : '#26a69a'; // 漲跌色
+                    const candleColor = value.close >= value.open ? '#ef5350' : '#26a69a';
                     tooltipHtml += `
                         <div style="margin-top: 4px;">
                             <div style="display:flex; align-items:center;">
@@ -154,9 +148,19 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                 } 
                 // 2. 單一數值 (成交量、KD、MACD、買賣超)
                 else if (value.value !== undefined) {
-                    // 根據數值正負決定顏色 (如果是 Histogram 且沒指定顏色的話)
                     const valColor = seriesOptions.color || (value.value >= 0 ? '#ef5350' : '#26a69a');
                     
+                    // 🔥 格式化邏輯在這裡 🔥
+                    let displayValue = "";
+                    // 判斷是否為成交量或籌碼相關 (標題含 "量", "Vol", "資", "信", "營", "戶" 等)
+                    if (title.includes('量') || title.includes('Vol') || title.includes('資') || title.includes('信') || title.includes('營') || title.includes('戶')) {
+                        // 整數 + 千分位 + "張"
+                        displayValue = Math.round(value.value).toLocaleString() + ' 張';
+                    } else {
+                        // 其他指標維持小數點 2 位 (如 KD, MACD, MA)
+                        displayValue = Number(value.value).toFixed(2);
+                    }
+
                     tooltipHtml += `
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 2px;">
                             <div style="display: flex; align-items: center;">
@@ -164,7 +168,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                                 <span style="color: #ddd; margin-right: 8px;">${title}</span>
                             </div>
                             <span style="font-family: monospace; font-weight: bold; color: ${valColor};">
-                                ${Number(value.value).toFixed(2)}
+                                ${displayValue}
                             </span>
                         </div>`;
                 }
@@ -172,9 +176,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
             toolTip.innerHTML = tooltipHtml;
             
-            // 計算位置 (防止超出邊界)
-            const boxW = 160; // 稍微寬一點以容納文字
-            const boxH = 100; // 預估高度
+            // 計算位置
+            const boxW = 180; // 加寬一點以容納長數字
+            const boxH = 100;
             const margin = 15;
             
             let left = param.point.x + margin;
