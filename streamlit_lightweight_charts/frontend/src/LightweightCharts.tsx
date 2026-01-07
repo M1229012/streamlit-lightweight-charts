@@ -1,10 +1,5 @@
 import { useRenderData } from "streamlit-component-lib-react-hooks"
-import {
-  createChart,
-  IChartApi,
-  MouseEventParams,
-  ISeriesApi,
-} from "lightweight-charts"
+import { createChart, IChartApi, MouseEventParams, ISeriesApi } from "lightweight-charts"
 import React, { useRef, useEffect } from "react"
 
 type SeriesMeta = {
@@ -57,30 +52,50 @@ function ensurePaneTooltip(container: HTMLDivElement) {
     toolTip = document.createElement("div")
     toolTip.className = "floating-tooltip"
     Object.assign(toolTip.style, {
-      width: "auto",
-      height: "auto",
       position: "absolute",
       display: "none",
       padding: "8px 10px",
-      boxSizing: "border-box",
       fontSize: "12px",
-      textAlign: "left",
-      zIndex: "1000",
+      zIndex: "1200",
       top: "10px",
       left: "10px",
       pointerEvents: "none",
       border: "1px solid rgba(255,255,255,0.15)",
       borderRadius: "8px",
-      fontFamily:
-        "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Ubuntu,'Helvetica Neue',Arial",
       background: "rgba(20, 20, 20, 0.88)",
       color: "#ececec",
       boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+      fontFamily:
+        "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Ubuntu,'Helvetica Neue',Arial",
     })
-    container.style.position = "relative"
+    const style = getComputedStyle(container)
+    if (style.position === "static") container.style.position = "relative"
     container.appendChild(toolTip)
   }
   return toolTip
+}
+
+function ensureGlobalVLine(host: HTMLDivElement) {
+  let line = host.querySelector(".global-vline") as HTMLDivElement | null
+  if (!line) {
+    line = document.createElement("div")
+    line.className = "global-vline"
+    Object.assign(line.style, {
+      position: "absolute",
+      top: "0px",
+      bottom: "0px",
+      width: "2px",
+      background: "rgba(255,255,255,0.55)", // 🔥 直線更明顯
+      display: "none",
+      pointerEvents: "none",
+      zIndex: "2000",
+      transform: "translateX(-1px)",
+    })
+    const style = getComputedStyle(host)
+    if (style.position === "static") host.style.position = "relative"
+    host.appendChild(line)
+  }
+  return line
 }
 
 const LightweightChartsMultiplePanes: React.VFC = () => {
@@ -88,26 +103,34 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   const chartsData = renderData.args["charts"] || []
 
   const chartsContainerRef = useRef<HTMLDivElement>(null)
+  const panes = useRef<PaneMeta[]>([])
+  const chartInstances = useRef<(IChartApi | null)[]>([])
+  const globalVLineRef = useRef<HTMLDivElement | null>(null)
 
+  // 建立每個 pane DOM ref
   const chartElRefs = useRef<Array<React.RefObject<HTMLDivElement>>>(
     Array(chartsData.length)
       .fill(null)
       .map(() => React.createRef<HTMLDivElement>())
   ).current
 
-  const chartInstances = useRef<(IChartApi | null)[]>([])
-  const panes = useRef<PaneMeta[]>([])
-
   useEffect(() => {
     if (!chartsData?.length) return
     if (chartElRefs.some((ref) => !ref.current)) return
 
-    // 清掉舊 chart
+    // 清理舊 chart
     chartInstances.current.forEach((c) => c && c.remove())
     chartInstances.current = []
     panes.current = []
 
-    let isSyncing = false
+    const host = chartsContainerRef.current
+    if (host) {
+      globalVLineRef.current = ensureGlobalVLine(host)
+      host.addEventListener("mouseleave", () => {
+        panes.current.forEach((p) => (p.tooltip.style.display = "none"))
+        if (globalVLineRef.current) globalVLineRef.current.style.display = "none"
+      })
+    }
 
     // 建立每個 pane
     chartElRefs.forEach((ref, i) => {
@@ -125,19 +148,17 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         },
       })
 
-      // ✅ 讓垂直十字線更明顯（重點）
+      // ✅ 只保留主圖的 label（線本體交給 overlay 來畫）
       chart.applyOptions({
         crosshair: {
-          // 0=Normal, 1=Magnet（不想吸附就用 0）
           mode: 0 as any,
           vertLine: {
-            visible: true,
-            width: 2, // 🔥 加粗
-            color: "rgba(255,255,255,0.35)", // 🔥 更亮
-            style: 0 as any, // 0=solid
+            visible: i === 0,
+            width: 1,
+            color: "rgba(255,255,255,0.01)", // 幾乎透明：保留 label 但不搶線
+            style: 0 as any,
             labelBackgroundColor: "rgba(20,20,20,0.9)",
           },
-          // 副圖通常不用水平線，避免雜亂；主圖可以留
           horzLine: {
             visible: i === 0,
             width: 1,
@@ -181,9 +202,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
         if (api) {
           if (s.priceScale)
-            chart
-              .priceScale(s.options?.priceScaleId || "")
-              .applyOptions(s.priceScale)
+            chart.priceScale(s.options?.priceScaleId || "").applyOptions(s.priceScale)
 
           api.setData(s.data)
           if (s.markers) api.setMarkers(s.markers)
@@ -200,15 +219,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       chart.timeScale().fitContent()
     })
 
-    // ✅ 統一用 logical index：同步十字線 + 更新每個 pane 自己的 tooltip
     const hideAll = () => {
       panes.current.forEach((p) => (p.tooltip.style.display = "none"))
-      chartInstances.current.forEach((c) => c && (c as any).clearCrosshairPosition?.())
+      if (globalVLineRef.current) globalVLineRef.current.style.display = "none"
     }
 
     const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => {
-      let html =
-        `<div style="font-weight:800;font-size:13px;margin-bottom:6px;color:#fff;">${timeStr}</div>`
+      let html = `<div style="font-weight:800;font-size:13px;margin-bottom:6px;color:#fff;">${timeStr}</div>`
 
       pane.series.forEach((sm) => {
         const d = sm.api.dataByIndex(logical)
@@ -224,7 +241,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         else if (so.upColor) color = so.upColor
         else if (so.lineColor) color = so.lineColor
 
-        // K棒 OHLC
+        // K棒
         if (d.open !== undefined) {
           const candleColor = d.close >= d.open ? "#ef5350" : "#26a69a"
           html += `
@@ -273,13 +290,17 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       pane.tooltip.style.display = "block"
     }
 
-    const syncToLogical = (sourceChart: IChartApi, param: MouseEventParams) => {
-      if (!param?.point || param.time == null) {
+    const syncAll = (sourcePane: PaneMeta, param: MouseEventParams) => {
+      const host = chartsContainerRef.current
+      const vline = globalVLineRef.current
+
+      if (!host || !vline || !param?.point || param.time == null) {
         hideAll()
         return
       }
 
-      const logical = sourceChart.timeScale().coordinateToLogical(param.point.x)
+      // 取得同一根 K 的 logical index
+      const logical = sourcePane.chart.timeScale().coordinateToLogical(param.point.x)
       if (logical == null) {
         hideAll()
         return
@@ -287,31 +308,23 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
       const timeStr = formatTime(param.time)
 
-      // 1) 十字線貫穿同步（每個 pane 用同一 logical 換 x）
-      if (!isSyncing) {
-        isSyncing = true
-        panes.current.forEach((pane) => {
-          const x = pane.chart.timeScale().logicalToCoordinate(logical)
-          if (x == null) {
-            ;(pane.chart as any).clearCrosshairPosition?.()
-            return
-          }
-          const y = Math.max(1, Math.floor(pane.container.clientHeight / 2))
-          ;(pane.chart as any).moveCrosshair?.({ x, y })
-        })
-        isSyncing = false
-      }
+      // ✅ 1) 畫「全域貫穿」直線（真正貫穿所有附圖）
+      const hostRect = host.getBoundingClientRect()
+      const srcRect = sourcePane.container.getBoundingClientRect()
+      const globalX = (srcRect.left - hostRect.left) + param.point.x
+      vline.style.left = `${globalX}px`
+      vline.style.display = "block"
 
-      // 2) 每個 pane 各自更新自己的 tooltip（不再擠同一個）
-      panes.current.forEach((pane) => updatePaneTooltip(pane, timeStr, logical))
+      // ✅ 2) 每個 pane 各自更新自己的 tooltip（用同一 logical）
+      panes.current.forEach((p) => updatePaneTooltip(p, timeStr, logical))
     }
 
-    // 訂閱每個 chart 的 crosshair move（任何一個動，都同步全體）
-    panes.current.forEach((pane) => {
-      pane.chart.subscribeCrosshairMove((param) => syncToLogical(pane.chart, param))
+    // 訂閱：任何 pane 移動 → 同步到全部
+    panes.current.forEach((p) => {
+      p.chart.subscribeCrosshairMove((param) => syncAll(p, param))
     })
 
-    // 同步時間範圍（縮放/拖拉）
+    // 同步時間縮放/拖曳
     const validCharts = chartInstances.current.filter((c): c is IChartApi => c !== null)
     if (validCharts.length > 1) {
       let syncingRange = false
@@ -320,21 +333,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (!range) return
           if (syncingRange) return
           syncingRange = true
-          validCharts
-            .filter((c) => c !== chart)
-            .forEach((c) => c.timeScale().setVisibleLogicalRange(range))
+          validCharts.filter((c) => c !== chart).forEach((c) => c.timeScale().setVisibleLogicalRange(range))
           syncingRange = false
         })
       })
     }
 
-    // cleanup
     return () => {
-      panes.current.forEach((pane) => {
-        try {
-          pane.chart.unsubscribeCrosshairMove(() => {})
-        } catch {}
-      })
       chartInstances.current.forEach((c) => c && c.remove())
       chartInstances.current = []
       panes.current = []
