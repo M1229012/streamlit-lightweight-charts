@@ -241,14 +241,27 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         else if (so.upColor) color = so.upColor
         else if (so.lineColor) color = so.lineColor
 
-        // K棒
+        // ✅ K棒（加入漲跌幅%）
         if (d.open !== undefined) {
           const candleColor = d.close >= d.open ? "#ef5350" : "#26a69a"
+
+          // 漲跌幅%（以開盤為基準）
+          const pct =
+            typeof d.open === "number" && d.open !== 0 && typeof d.close === "number"
+              ? ((d.close - d.open) / d.open) * 100
+              : null
+          const pctStr = pct == null ? "--" : `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`
+
           html += `
             <div style="margin-top:6px;">
-              <div style="display:flex;align-items:center;">
-                <span style="width:8px;height:8px;border-radius:50%;background:${candleColor};margin-right:6px;"></span>
-                <span style="font-weight:800;color:${candleColor};">收盤: ${toFixedMaybe(d.close, 2)}</span>
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                <div style="display:flex;align-items:center;">
+                  <span style="width:8px;height:8px;border-radius:50%;background:${candleColor};margin-right:6px;"></span>
+                  <span style="font-weight:800;color:${candleColor};">收盤: ${toFixedMaybe(d.close, 2)}</span>
+                </div>
+                <span style="font-family:monospace;font-weight:800;color:${candleColor};">
+                  ${pctStr}
+                </span>
               </div>
               <div style="font-size:11px;color:#aaa;margin-left:14px;">
                 開:${toFixedMaybe(d.open,2)} 高:${toFixedMaybe(d.high,2)} 低:${toFixedMaybe(d.low,2)}
@@ -333,7 +346,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (!range) return
           if (syncingRange) return
           syncingRange = true
-          validCharts.filter((c) => c !== chart).forEach((c) => c.timeScale().setVisibleLogicalRange(range))
+          validCharts
+            .filter((c) => c !== chart)
+            .forEach((c) => c.timeScale().setVisibleLogicalRange(range))
           syncingRange = false
         })
       })
