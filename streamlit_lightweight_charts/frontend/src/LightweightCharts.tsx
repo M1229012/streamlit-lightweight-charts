@@ -1,6 +1,6 @@
 import { useRenderData } from "streamlit-component-lib-react-hooks"
 import { createChart, IChartApi, MouseEventParams, ISeriesApi } from "lightweight-charts"
-import React, { useRef, useEffect } from "react"
+import React, { useRef, useEffect, useMemo } from "react"
 
 type SeriesMeta = {
   api: ISeriesApi<any>
@@ -84,12 +84,12 @@ function ensureGlobalVLine(host: HTMLDivElement) {
       position: "absolute",
       top: "0px",
       bottom: "0px",
-      width: "2px",
-      background: "rgba(255,255,255,0.55)",
+      width: "1px",
+      background: "rgba(255,255,255,0.4)",
       display: "none",
       pointerEvents: "none",
       zIndex: "2000",
-      transform: "translateX(-1px)",
+      transform: "translateX(-0.5px)",
     })
     const style = getComputedStyle(host)
     if (style.position === "static") host.style.position = "relative"
@@ -106,13 +106,13 @@ function ensureGlobalMask(host: HTMLDivElement) {
     Object.assign(mask.style, {
       position: "absolute",
       top: "0px",
-      bottom: "0px",
+      bottom: "0px", // 確保覆蓋整個 Host 高度
       left: "0px",
       width: "0px",
       display: "none",
       pointerEvents: "none",
-      zIndex: "1500",
-      background: "rgba(255,255,255,0.14)", // ✅ 白白透明遮罩
+      zIndex: "100", // 在圖表之上，Tooltip 之下
+      background: "rgba(255, 235, 59, 0.15)", // 半透明黃色
     })
     const style = getComputedStyle(host)
     if (style.position === "static") host.style.position = "relative"
@@ -132,12 +132,12 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   const globalMaskRef = useRef<HTMLDivElement | null>(null)
   const primaryTimesRef = useRef<any[]>([])
 
-  // 建立每個 pane DOM ref
-  const chartElRefs = useRef<Array<React.RefObject<HTMLDivElement>>>(
-    Array(chartsData.length)
+  // ✅ [修正] 使用 useMemo 動態建立 Refs，解決切換圖表時 hooks 數量不一致導致的紅字錯誤
+  const chartElRefs = useMemo(() => {
+    return Array(chartsData.length)
       .fill(null)
-      .map(() => React.createRef<HTMLDivElement>())
-  ).current
+      .map(() => React.createRef<HTMLDivElement>());
+  }, [chartsData.length]);
 
   useEffect(() => {
     if (!chartsData?.length) return
@@ -173,9 +173,15 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           textColor: "#d1d4dc",
           ...(chartsData[i].chart?.layout || {}),
         },
+        // ✅ [修正] 強制設定右側座標軸最小寬度，解決主圖與副圖十字線對不齊的問題
+        rightPriceScale: {
+          visible: true,
+          minimumWidth: 70, 
+          borderColor: "rgba(197, 203, 206, 0.8)",
+          ...(chartsData[i].chart?.rightPriceScale || {}),
+        },
       })
 
-      // ✅ 只保留主圖的 label（線本體交給 overlay 來畫）
       chart.applyOptions({
         crosshair: {
           mode: 0 as any,
@@ -234,7 +240,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           api.setData(s.data)
           if (s.markers) api.setMarkers(s.markers)
 
-          // ✅ 儲存主圖時間序列，供遮罩對齊（只抓第一個 pane 的 Candlestick）
+          // 儲存主圖時間序列
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
             primaryTimesRef.current = s.data.map((d: any) => d?.time)
           }
@@ -273,11 +279,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         else if (so.upColor) color = so.upColor
         else if (so.lineColor) color = so.lineColor
 
-        // ✅ K棒（加入漲跌幅%）
         if (d.open !== undefined) {
           const candleColor = d.close >= d.open ? "#ef5350" : "#26a69a"
-
-          // 漲跌幅%（以開盤為基準）
           const pct =
             typeof d.open === "number" && d.open !== 0 && typeof d.close === "number"
               ? ((d.close - d.open) / d.open) * 100
@@ -302,7 +305,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           return
         }
 
-        // 單值
         const v = pickValue(d)
         let displayValue = "--"
 
@@ -350,7 +352,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const startStr = String(hr.start)
       const endStr = String(hr.end)
 
-      // times: "YYYY-MM-DD" 直接字串比較即可
       const startIdx = times.findIndex((t: any) => String(t) >= startStr)
       let endIdx = -1
       for (let i = times.length - 1; i >= 0; i--) {
@@ -381,7 +382,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       let left = (paneRect.left - hostRect.left) + Math.min(x1Local, x2Local)
       let right = (paneRect.left - hostRect.left) + Math.max(x1Local, x2Local)
 
-      // 盡量擴到整根 K 棒寬度（barSpacing 若取不到就不加）
       const barSpacing =
         (chart0.timeScale() as any)?.options?.()?.barSpacing ??
         (chart0 as any)?.options?.()?.timeScale?.barSpacing
@@ -405,7 +405,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
-      // ✅ 日級吸附：logical index 取最近整數（一天一格）
       const rawLogical = sourcePane.chart.timeScale().coordinateToLogical(param.point.x)
       if (rawLogical == null) {
         hideAll()
@@ -419,7 +418,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
-      // ✅ 用「吸附後」資料點的 time 當顯示日期
       let timeForLabel: any = param.time
       const primary = panes.current?.[0]
       const primaryCandle = primary?.series?.find((sm) => {
@@ -432,17 +430,14 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
       const timeStr = formatTime(timeForLabel)
 
-      // ✅ 1) 畫「全域貫穿」直線（真正貫穿所有附圖）
       const hostRect = host.getBoundingClientRect()
       const srcRect = sourcePane.container.getBoundingClientRect()
       const globalX = (srcRect.left - hostRect.left) + snappedX
       vline.style.left = `${globalX}px`
       vline.style.display = "block"
 
-      // ✅ 2) 每個 pane 各自更新自己的 tooltip（同一 logical）
       panes.current.forEach((p) => updatePaneTooltip(p, timeStr, logical))
 
-      // ✅ 3) 嘗試把各 pane 的 crosshair 也吸附（若版本支援 setCrosshairPosition）
       panes.current.forEach((p) => {
         const sm0 = p.series?.[0]
         if (!sm0) return
@@ -464,12 +459,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       })
     }
 
-    // 訂閱：任何 pane 移動 → 同步到全部
     panes.current.forEach((p) => {
       p.chart.subscribeCrosshairMove((param) => syncAll(p, param))
     })
 
-    // 同步時間縮放/拖曳
     const validCharts = chartInstances.current.filter((c): c is IChartApi => c !== null)
     if (validCharts.length > 1) {
       let syncingRange = false
@@ -482,20 +475,16 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             .filter((c) => c !== chart)
             .forEach((c) => c.timeScale().setVisibleLogicalRange(range))
           syncingRange = false
-
-          // ✅ range 改變時，遮罩也要跟著重算位置
           updateGlobalMask()
         })
       })
     } else {
-      // 單圖也要更新遮罩
       const c0 = validCharts[0]
       if (c0) {
         c0.timeScale().subscribeVisibleLogicalRangeChange(() => updateGlobalMask())
       }
     }
 
-    // ✅ 初次畫完就更新遮罩
     updateGlobalMask()
 
     const onResize = () => updateGlobalMask()
