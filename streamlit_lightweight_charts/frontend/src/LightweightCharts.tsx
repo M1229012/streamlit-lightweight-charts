@@ -98,14 +98,65 @@ function ensureGlobalVLine(host: HTMLDivElement) {
   return line
 }
 
+// ✅ 白色半透明遮罩（主 K 線用）
+function ensureRangeMask(container: HTMLDivElement) {
+  let mask = container.querySelector(".range-mask") as HTMLDivElement | null
+  if (!mask) {
+    mask = document.createElement("div")
+    mask.className = "range-mask"
+    Object.assign(mask.style, {
+      position: "absolute",
+      top: "0px",
+      bottom: "0px",
+      left: "0px",
+      width: "0px",
+      display: "none",
+      pointerEvents: "none",
+      zIndex: "900",
+      background: "rgba(255,255,255,0.12)",
+      borderLeft: "1px solid rgba(255,255,255,0.18)",
+      borderRight: "1px solid rgba(255,255,255,0.18)",
+      borderRadius: "6px",
+    })
+    const style = getComputedStyle(container)
+    if (style.position === "static") container.style.position = "relative"
+    container.appendChild(mask)
+  }
+  return mask
+}
+
+function parseDateStrToBusinessDay(s: any) {
+  if (!s || typeof s !== "string") return null
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!m) return null
+  return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) }
+}
+
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n))
+}
+
 const LightweightChartsMultiplePanes: React.VFC = () => {
   const renderData = useRenderData()
   const chartsData = renderData.args["charts"] || []
+
+  // ✅ 從 Streamlit 傳入：{ start: "YYYY-MM-DD", end: "YYYY-MM-DD" }
+  // 你可以用 highlightRange 或 highlight_range 兩種 key（二擇一）
+  const highlightRange =
+    renderData.args["highlightRange"] ||
+    renderData.args["highlight_range"] ||
+    null
 
   const chartsContainerRef = useRef<HTMLDivElement>(null)
   const panes = useRef<PaneMeta[]>([])
   const chartInstances = useRef<(IChartApi | null)[]>([])
   const globalVLineRef = useRef<HTMLDivElement | null>(null)
+
+  // ✅ 主 K 線遮罩 DOM
+  const rangeMaskRef = useRef<HTMLDivElement | null>(null)
+
+  // ✅ 十字線吸附：避免同一根 K 重複更新
+  const lastLogicalRef = useRef<number | null>(null)
 
   // 建立每個 pane DOM ref
   const chartElRefs = useRef<Array<React.RefObject<HTMLDivElement>>>(
@@ -122,6 +173,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     chartInstances.current.forEach((c) => c && c.remove())
     chartInstances.current = []
     panes.current = []
+    rangeMaskRef.current = null
+    lastLogicalRef.current = null
 
     const host = chartsContainerRef.current
     if (host) {
@@ -172,6 +225,11 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
       const tooltip = ensurePaneTooltip(container)
       panes.current[i] = { chart, container, tooltip, series: [] }
+
+      // ✅ 主 K 線（pane 0）建立遮罩容器
+      if (i === 0) {
+        rangeMaskRef.current = ensureRangeMask(container)
+      }
 
       // 加 series
       for (const s of chartsData[i].series) {
@@ -303,6 +361,46 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       pane.tooltip.style.display = "block"
     }
 
+    // ✅ 更新「主圖遮罩」位置
+    const updateRangeMask = () => {
+      const mask = rangeMaskRef.current
+      if (!mask) return
+      if (!highlightRange || !highlightRange.start || !highlightRange.end) {
+        mask.style.display = "none"
+        return
+      }
+
+      const p0 = panes.current[0]
+      if (!p0) {
+        mask.style.display = "none"
+        return
+      }
+
+      const startBD = parseDateStrToBusinessDay(highlightRange.start)
+      const endBD = parseDateStrToBusinessDay(highlightRange.end)
+      if (!startBD || !endBD) {
+        mask.style.display = "none"
+        return
+      }
+
+      const x1 = p0.chart.timeScale().timeToCoordinate(startBD as any)
+      const x2 = p0.chart.timeScale().timeToCoordinate(endBD as any)
+
+      if (x1 == null || x2 == null) {
+        mask.style.display = "none"
+        return
+      }
+
+      const w = p0.container.clientWidth || 0
+      const left = clamp(Math.min(x1, x2), 0, w)
+      const right = clamp(Math.max(x1, x2), 0, w)
+      const width = Math.max(0, right - left)
+
+      mask.style.left = `${left}px`
+      mask.style.width = `${width}px`
+      mask.style.display = width > 0 ? "block" : "none"
+    }
+
     const syncAll = (sourcePane: PaneMeta, param: MouseEventParams) => {
       const host = chartsContainerRef.current
       const vline = globalVLineRef.current
@@ -312,23 +410,43 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
-      // 取得同一根 K 的 logical index
-      const logical = sourcePane.chart.timeScale().coordinateToLogical(param.point.x)
-      if (logical == null) {
+      // ✅ 十字線吸附：coordinateToLogical 可能是小數 → 四捨五入成「一天一根」
+      const rawLogical = sourcePane.chart.timeScale().coordinateToLogical(param.point.x)
+      if (rawLogical == null) {
+        hideAll()
+        return
+      }
+      const logical = Math.round(rawLogical)
+
+      // ✅ 同一根 K 不重複刷新（讓移動更像「一格一格」）
+      if (lastLogicalRef.current === logical) {
+        return
+      }
+      lastLogicalRef.current = logical
+
+      // ✅ 用主圖的 candle time 當作顯示日期（避免 param.time 被滑鼠連續影響）
+      const p0 = panes.current[0]
+      let timeStr = formatTime(param.time)
+      if (p0?.series?.length) {
+        const d0 = p0.series[0].api.dataByIndex(logical) as any
+        if (d0?.time != null) timeStr = formatTime(d0.time)
+      }
+
+      // ✅ 垂直線也吸附到該根 K 的 x（避免跟著滑鼠「滑動」）
+      const snappedX = sourcePane.chart.timeScale().logicalToCoordinate(logical)
+      if (snappedX == null) {
         hideAll()
         return
       }
 
-      const timeStr = formatTime(param.time)
-
-      // ✅ 1) 畫「全域貫穿」直線（真正貫穿所有附圖）
+      // ✅ 1) 畫「全域貫穿」直線
       const hostRect = host.getBoundingClientRect()
       const srcRect = sourcePane.container.getBoundingClientRect()
-      const globalX = (srcRect.left - hostRect.left) + param.point.x
+      const globalX = (srcRect.left - hostRect.left) + snappedX
       vline.style.left = `${globalX}px`
       vline.style.display = "block"
 
-      // ✅ 2) 每個 pane 各自更新自己的 tooltip（用同一 logical）
+      // ✅ 2) 每個 pane 更新 tooltip（同一 logical）
       panes.current.forEach((p) => updatePaneTooltip(p, timeStr, logical))
     }
 
@@ -350,16 +468,27 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             .filter((c) => c !== chart)
             .forEach((c) => c.timeScale().setVisibleLogicalRange(range))
           syncingRange = false
+
+          // ✅ 縮放/拖曳後同步更新遮罩位置
+          updateRangeMask()
         })
       })
     }
 
+    // ✅ 初次建立後也要畫一次遮罩
+    updateRangeMask()
+
+    // ✅ window resize 時重新計算遮罩位置（避免寬度變了遮罩不對）
+    const onResize = () => updateRangeMask()
+    window.addEventListener("resize", onResize)
+
     return () => {
+      window.removeEventListener("resize", onResize)
       chartInstances.current.forEach((c) => c && c.remove())
       chartInstances.current = []
       panes.current = []
     }
-  }, [chartsData])
+  }, [chartsData, highlightRange])
 
   return (
     <div ref={chartsContainerRef}>
