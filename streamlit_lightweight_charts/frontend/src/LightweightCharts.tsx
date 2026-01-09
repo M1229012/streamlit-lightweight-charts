@@ -10,7 +10,7 @@ import React, { useRef, useEffect, useMemo } from "react"
 // 統一轉換為 UNIX Timestamp (秒) 以便比較
 function normalizeDate(d: any): number | null {
   if (d == null) return null
-  
+
   // 1. 如果已經是數字 (Unix Timestamp)
   if (typeof d === "number") return d
 
@@ -33,12 +33,35 @@ function normalizeDate(d: any): number | null {
   return null
 }
 
+// ✅ NEW：把各種輸入轉成 Lightweight-Charts 的 BusinessDay（避免用 logical index）
+function toBusinessDay(t: any): any | null {
+  if (t == null) return null
+
+  // 已經是 BusinessDay
+  if (typeof t === "object" && "year" in t && "month" in t && "day" in t) return t
+
+  // 'YYYY-MM-DD'
+  if (typeof t === "string") {
+    const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    if (!m) return null
+    return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) }
+  }
+
+  // Unix timestamp(sec)
+  if (typeof t === "number") {
+    const d = new Date(t * 1000)
+    return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() }
+  }
+
+  return null
+}
+
 function formatTime(t: any) {
   if (t == null) return ""
   // 嘗試轉成 Date 物件輸出字串
   if (typeof t === "number") {
     const d = new Date(t * 1000)
-    return d.toISOString().split('T')[0] // YYYY-MM-DD
+    return d.toISOString().split("T")[0] // YYYY-MM-DD
   }
   if (typeof t === "object" && "year" in t) {
     const y = t.year
@@ -77,7 +100,7 @@ function ensurePaneTooltip(container: HTMLDivElement) {
       display: "none",
       padding: "8px 10px",
       fontSize: "12px",
-      zIndex: "1000", // Tooltip 在最上層
+      zIndex: "2000", // Tooltip 在最上層
       top: "10px",
       left: "10px",
       pointerEvents: "none",
@@ -108,7 +131,7 @@ function ensureGlobalVLine(host: HTMLDivElement) {
       background: "rgba(255,255,255,0.3)",
       display: "none",
       pointerEvents: "none",
-      zIndex: "900", // 十字線
+      zIndex: "1500", // ✅ 提高，確保在 canvas 上方
       transform: "translateX(-0.5px)",
     })
     const style = getComputedStyle(host)
@@ -132,10 +155,10 @@ function ensureGlobalMask(host: HTMLDivElement) {
       width: "0px",
       display: "none",
       pointerEvents: "none",
-      // ✅ 關鍵：zIndex 要在 Canvas 之上，但在 Tooltip 之下
-      zIndex: "50", 
+      // ✅ 關鍵：提高到 canvas 之上，但仍低於 vline/tooltip
+      zIndex: "1200",
       // ✅ 樣式：半透明黃色 (模仿籌碼K線)
-      background: "rgba(255, 235, 59, 0.15)", 
+      background: "rgba(255, 235, 59, 0.15)",
       borderLeft: "1px solid rgba(255, 235, 59, 0.4)",
       borderRight: "1px solid rgba(255, 235, 59, 0.4)",
     })
@@ -172,9 +195,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   const chartInstances = useRef<(IChartApi | null)[]>([])
   const globalVLineRef = useRef<HTMLDivElement | null>(null)
   const globalMaskRef = useRef<HTMLDivElement | null>(null)
-  
-  // 儲存主圖的時間序列 (用於計算遮罩位置)
-  const primaryTimesRef = useRef<number[]>([]) 
+
+  // 儲存主圖的時間序列 (用於計算遮罩位置)（保留，不破壞你原本邏輯）
+  const primaryTimesRef = useRef<number[]>([])
 
   const chartElRefs = useMemo(() => {
     return Array(chartsData.length)
@@ -198,7 +221,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     if (!host || !mask) return
 
     const hr = chartsData?.[0]?.highlightRange
-    const times = primaryTimesRef.current // 這裡是已經 normalize 過的 timestamps
+    const times = primaryTimesRef.current
 
     // 1. 檢查資料是否充足
     if (!hr || !hr.start || !hr.end || !times || times.length === 0 || panes.current.length === 0) {
@@ -206,86 +229,52 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       return
     }
 
-    // 2. 將 Python 傳來的 start/end 轉成 Timestamp
-    const tStart = normalizeDate(hr.start)
-    const tEnd = normalizeDate(hr.end)
-
-    if (tStart === null || tEnd === null) {
+    // 2. ✅ 改用 BusinessDay，避免 logical index 不穩或對不上
+    const bdStart = toBusinessDay(hr.start)
+    const bdEnd = toBusinessDay(hr.end)
+    if (!bdStart || !bdEnd) {
       mask.style.display = "none"
       return
     }
 
-    // 3. 在 times 陣列中尋找對應的 Index
-    // startIdx: 第一個 >= tStart 的位置
-    let startIdx = -1
-    for (let i = 0; i < times.length; i++) {
-      if (times[i] >= tStart) {
-        startIdx = i
-        break
-      }
-    }
-
-    // endIdx: 最後一個 <= tEnd 的位置
-    let endIdx = -1
-    for (let i = times.length - 1; i >= 0; i--) {
-      if (times[i] <= tEnd) {
-        endIdx = i
-        break
-      }
-    }
-
-    // 如果找不到或範圍無效
-    if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) {
-      mask.style.display = "none"
-      return
-    }
-
-    // 4. 計算像素位置
+    // 3. 計算像素位置：直接用 timeToCoordinate
     const p0 = panes.current[0]
     const timeScale = p0.chart.timeScale()
 
-    // 獲取可視範圍的 logical range (如果完全在畫面外就不畫)
-    // 但為了簡單，直接計算坐標，library 會處理負值
-    const x1 = timeScale.logicalToCoordinate(startIdx as any)
-    const x2 = timeScale.logicalToCoordinate(endIdx as any)
+    const x1 = timeScale.timeToCoordinate(bdStart as any)
+    const x2 = timeScale.timeToCoordinate(bdEnd as any)
 
-    // 如果 x1, x2 是 null，代表尚未渲染或異常
-    if (x1 === null || x2 === null) {
-      // 嘗試用 barSpacing 估算 (當部分在畫面外時)
-      // 這裡簡單處理：若 convert 失敗通常代表 chart 未 ready，先隱藏
-      // 但 Lightweight charts 4.0+ logicalToCoordinate 在畫面外也會回傳數值，除非 index 無效
-      // 我們依賴 ResizeObserver 持續更新
+    if (x1 == null || x2 == null) {
+      // 可能是 range 完全不在目前資料/可視範圍或 chart 尚未 ready
+      mask.style.display = "none"
+      return
     }
 
-    // 重新取得確實的座標 (若是 null 則用 0 或 max)
-    const safeX1 = x1 ?? -1000
-    const safeX2 = x2 ?? 1000
+    // 4. 寬度微調：用 barSpacing（可取得就用，取不到就 fallback）
+    let barSpacing = 6
+    try {
+      const opts: any = (timeScale as any).options?.()
+      if (opts && typeof opts.barSpacing === "number") barSpacing = opts.barSpacing
+    } catch {}
+
+    const safeLeft = Math.min(x1, x2) - barSpacing * 0.5
+    const safeRight = Math.max(x1, x2) + barSpacing * 0.5
 
     const hostRect = host.getBoundingClientRect()
     const paneRect = p0.container.getBoundingClientRect()
-    
-    // 計算相對於 host 的偏移量
     const offsetX = paneRect.left - hostRect.left
-    
-    // 計算遮罩的 left 和 width
-    // 為了美觀，稍微加寬半個 bar spacing
-    const barWidth = (timeScale.scrollPosition() - timeScale.coordinateToLogical(0)) !== 0 
-                     ? (timeScale.width() / (timeScale.getVisibleLogicalRange()?.to! - timeScale.getVisibleLogicalRange()?.from!)) 
-                     : 6 // fallback
-    
-    const finalLeft = Math.min(safeX1, safeX2) - (barWidth * 0.4)
-    const finalRight = Math.max(safeX1, safeX2) + (barWidth * 0.4)
-    
-    const styleLeft = offsetX + finalLeft
-    const styleWidth = finalRight - finalLeft
 
-    if (styleWidth <= 0) {
+    const styleLeft = offsetX + safeLeft
+    const styleWidth = safeRight - safeLeft
+
+    if (!isFinite(styleLeft) || !isFinite(styleWidth) || styleWidth <= 0) {
       mask.style.display = "none"
-    } else {
-      mask.style.display = "block"
-      mask.style.left = `${styleLeft}px`
-      mask.style.width = `${styleWidth}px`
+      return
     }
+
+    mask.style.display = "block"
+    mask.style.left = `${styleLeft}px`
+    mask.style.width = `${styleWidth}px`
   }
 
   // =========================================================
@@ -305,7 +294,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     if (host) {
       globalVLineRef.current = ensureGlobalVLine(host)
       globalMaskRef.current = ensureGlobalMask(host)
-      
+
       const mouseLeaveHandler = () => {
         panes.current.forEach((p) => (p.tooltip.style.display = "none"))
         if (globalVLineRef.current) globalVLineRef.current.style.display = "none"
@@ -321,9 +310,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   // =========================================================
   useEffect(() => {
     if (!chartsData?.length) return
-    
-    // 如果已經有 instances，我們可以選擇 destroy 重建以確保資料乾淨
-    // 為求穩健，這裡採用重建策略
+
+    // 重建策略
     chartInstances.current.forEach((c) => c && c.remove())
     chartInstances.current = []
     panes.current = []
@@ -353,7 +341,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           timeVisible: true,
           secondsVisible: false,
           ...(chartsData[i].chart?.timeScale || {}),
-        }
+        },
       })
 
       // Crosshair config
@@ -379,23 +367,37 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       for (const s of chartsData[i].series) {
         let api: ISeriesApi<any> | null = null
         switch (s.type) {
-          case "Candlestick": api = chart.addCandlestickSeries(s.options); break
-          case "Histogram": api = chart.addHistogramSeries(s.options); break
-          case "Line": api = chart.addLineSeries(s.options); break
-          case "Area": api = chart.addAreaSeries(s.options); break
-          case "Bar": api = chart.addBarSeries(s.options); break
-          case "Baseline": api = chart.addBaselineSeries(s.options); break
+          case "Candlestick":
+            api = chart.addCandlestickSeries(s.options)
+            break
+          case "Histogram":
+            api = chart.addHistogramSeries(s.options)
+            break
+          case "Line":
+            api = chart.addLineSeries(s.options)
+            break
+          case "Area":
+            api = chart.addAreaSeries(s.options)
+            break
+          case "Bar":
+            api = chart.addBarSeries(s.options)
+            break
+          case "Baseline":
+            api = chart.addBaselineSeries(s.options)
+            break
         }
 
         if (api) {
           if (s.priceScale) chart.priceScale(s.options?.priceScaleId || "").applyOptions(s.priceScale)
-          
+
           api.setData(s.data)
           if (s.markers) api.setMarkers(s.markers)
 
-          // 儲存主圖 (第一張圖) 的時間序列，並正規化
+          // 儲存主圖 (第一張圖) 的時間序列，並正規化（保留你的原邏輯）
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
-            primaryTimesRef.current = s.data.map((d: any) => normalizeDate(d.time)).filter((t): t is number => t !== null)
+            primaryTimesRef.current = s.data
+              .map((d: any) => normalizeDate(d.time))
+              .filter((t): t is number => t !== null)
           }
 
           panes.current[i].series.push({
@@ -405,7 +407,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           })
         }
       }
-      
+
       // Fit Content
       chart.timeScale().fitContent()
     })
@@ -413,13 +415,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     // =========================================================
     // 事件同步邏輯
     // =========================================================
-    
+
     // Crosshair Sync
     const syncCrosshair = (sourceChart: IChartApi, param: MouseEventParams, sourcePaneIndex: number) => {
       const vline = globalVLineRef.current
       const host = chartsContainerRef.current
       if (!vline || !host || !param.point || !param.time) {
-        panes.current.forEach(p => p.tooltip.style.display = "none")
+        panes.current.forEach((p) => (p.tooltip.style.display = "none"))
         if (vline) vline.style.display = "none"
         return
       }
@@ -431,8 +433,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
       const hostRect = host.getBoundingClientRect()
       const srcRect = sourcePane.container.getBoundingClientRect()
-      const absoluteX = (srcRect.left - hostRect.left) + rawX
-      
+      const absoluteX = srcRect.left - hostRect.left + rawX
+
       vline.style.left = `${absoluteX}px`
       vline.style.display = "block"
 
@@ -443,12 +445,12 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         // 這裡需要用 coordinate 反推 logical index 來找數據
         const logical = sourceChart.timeScale().coordinateToLogical(param.point!.x)
         if (logical !== null) {
-           updatePaneTooltip(target, timeStr, Math.round(logical))
+          updatePaneTooltip(target, timeStr, Math.round(logical))
         }
 
         // Sync chart crosshair (如果不是來源圖表)
         if (idx !== sourcePaneIndex) {
-           target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
+          target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
         }
       })
     }
@@ -465,25 +467,27 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
           if (!range || isSyncing) return
           isSyncing = true
-          validCharts.filter(c => c !== chart).forEach(c => c.timeScale().setVisibleLogicalRange(range))
+          validCharts
+            .filter((c) => c !== chart)
+            .forEach((c) => c.timeScale().setVisibleLogicalRange(range))
           isSyncing = false
           // 更新遮罩
           requestAnimationFrame(updateGlobalMask)
         })
       })
     } else if (validCharts.length === 1) {
-        validCharts[0].timeScale().subscribeVisibleLogicalRangeChange(() => {
-            requestAnimationFrame(updateGlobalMask)
-        })
+      validCharts[0].timeScale().subscribeVisibleLogicalRangeChange(() => {
+        requestAnimationFrame(updateGlobalMask)
+      })
     }
 
     // 初始化遮罩
-    setTimeout(updateGlobalMask, 100)
+    setTimeout(updateGlobalMask, 120)
 
     // Resize Observer
     const ro = new ResizeObserver(() => {
-        panes.current.forEach(p => p.chart.resize(p.container.clientWidth, 300))
-        updateGlobalMask()
+      panes.current.forEach((p) => p.chart.resize(p.container.clientWidth, 300))
+      updateGlobalMask()
     })
     if (chartsContainerRef.current) ro.observe(chartsContainerRef.current)
 
@@ -491,7 +495,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       ro.disconnect()
       chartInstances.current.forEach((c) => c && c.remove())
     }
-
   }, [chartsData]) // 當 chartsData 變更時 (包含 highlightRange) 重繪
 
   // 額外 Effect: 當 highlightRange 改變時，強制更新 Mask (不做整圖重繪)
@@ -500,7 +503,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   }, [highlightRangeSig])
 
   return (
-    <div ref={chartsContainerRef} style={{ position: 'relative' }}>
+    <div ref={chartsContainerRef} style={{ position: "relative" }}>
       {chartElRefs.map((ref, i) => (
         <div ref={ref} key={i} className="chart-pane" />
       ))}
@@ -510,35 +513,35 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
 // Helper for tooltip content generation (Keep logic same as before)
 const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => {
-    let html = `<div style="font-weight:bold;margin-bottom:4px;">${timeStr}</div>`
-    pane.series.forEach(s => {
-        const data = s.api.dataByIndex(logical) as any
-        if (!data) return
-        
-        let valStr = "--"
-        let color = "#fff"
-        const opts = s.options as any
+  let html = `<div style="font-weight:bold;margin-bottom:4px;">${timeStr}</div>`
+  pane.series.forEach((s) => {
+    const data = s.api.dataByIndex(logical) as any
+    if (!data) return
 
-        if (data.close !== undefined) {
-            // Candlestick
-            const isUp = data.close >= data.open
-            color = isUp ? opts.upColor : opts.downColor
-            valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(data.low)} C:${toFixedMaybe(data.close)}`
-        } else if (data.value !== undefined) {
-            // Line / Histogram
-            valStr = toFixedMaybe(data.value)
-            if (data.color) color = data.color
-            else if (opts.color) color = opts.color
-            else if (opts.lineColor) color = opts.lineColor
-        }
+    let valStr = "--"
+    let color = "#fff"
+    const opts = s.options as any
 
-        html += `<div style="display:flex;justify-content:space-between;gap:10px;color:${color}">
+    if (data.close !== undefined) {
+      // Candlestick
+      const isUp = data.close >= data.open
+      color = isUp ? opts.upColor : opts.downColor
+      valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(data.low)} C:${toFixedMaybe(data.close)}`
+    } else if (data.value !== undefined) {
+      // Line / Histogram
+      valStr = toFixedMaybe(data.value)
+      if (data.color) color = data.color
+      else if (opts.color) color = opts.color
+      else if (opts.lineColor) color = opts.lineColor
+    }
+
+    html += `<div style="display:flex;justify-content:space-between;gap:10px;color:${color}">
             <span>${s.title}</span>
             <span style="font-family:monospace">${valStr}</span>
         </div>`
-    })
-    pane.tooltip.innerHTML = html
-    pane.tooltip.style.display = "block"
+  })
+  pane.tooltip.innerHTML = html
+  pane.tooltip.style.display = "block"
 }
 
 export default LightweightChartsMultiplePanes
