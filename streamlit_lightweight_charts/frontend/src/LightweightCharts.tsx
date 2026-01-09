@@ -33,29 +33,6 @@ function normalizeDate(d: any): number | null {
   return null
 }
 
-// ✅ NEW：把各種輸入轉成 Lightweight-Charts 的 BusinessDay（避免用 logical index）
-function toBusinessDay(t: any): any | null {
-  if (t == null) return null
-
-  // 已經是 BusinessDay
-  if (typeof t === "object" && "year" in t && "month" in t && "day" in t) return t
-
-  // 'YYYY-MM-DD'
-  if (typeof t === "string") {
-    const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/)
-    if (!m) return null
-    return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) }
-  }
-
-  // Unix timestamp(sec)
-  if (typeof t === "number") {
-    const d = new Date(t * 1000)
-    return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() }
-  }
-
-  return null
-}
-
 function formatTime(t: any) {
   if (t == null) return ""
   // 嘗試轉成 Date 物件輸出字串
@@ -100,7 +77,7 @@ function ensurePaneTooltip(container: HTMLDivElement) {
       display: "none",
       padding: "8px 10px",
       fontSize: "12px",
-      zIndex: "2000", // Tooltip 在最上層
+      zIndex: "1000", // Tooltip 在最上層
       top: "10px",
       left: "10px",
       pointerEvents: "none",
@@ -131,7 +108,7 @@ function ensureGlobalVLine(host: HTMLDivElement) {
       background: "rgba(255,255,255,0.3)",
       display: "none",
       pointerEvents: "none",
-      zIndex: "1500", // ✅ 提高，確保在 canvas 上方
+      zIndex: "900", // 十字線
       transform: "translateX(-0.5px)",
     })
     const style = getComputedStyle(host)
@@ -155,8 +132,8 @@ function ensureGlobalMask(host: HTMLDivElement) {
       width: "0px",
       display: "none",
       pointerEvents: "none",
-      // ✅ 關鍵：提高到 canvas 之上，但仍低於 vline/tooltip
-      zIndex: "1200",
+      // ✅ 關鍵：確保遮罩在 Canvas 之上、但在 VLine/Tooltip 之下
+      zIndex: "800",
       // ✅ 樣式：半透明黃色 (模仿籌碼K線)
       background: "rgba(255, 235, 59, 0.15)",
       borderLeft: "1px solid rgba(255, 235, 59, 0.4)",
@@ -196,7 +173,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   const globalVLineRef = useRef<HTMLDivElement | null>(null)
   const globalMaskRef = useRef<HTMLDivElement | null>(null)
 
-  // 儲存主圖的時間序列 (用於計算遮罩位置)（保留，不破壞你原本邏輯）
+  // 儲存主圖的時間序列 (用於計算遮罩位置)
   const primaryTimesRef = useRef<number[]>([])
 
   const chartElRefs = useMemo(() => {
@@ -221,7 +198,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     if (!host || !mask) return
 
     const hr = chartsData?.[0]?.highlightRange
-    const times = primaryTimesRef.current
+    const times = primaryTimesRef.current // 這裡是已經 normalize 過的 timestamps
 
     // 1. 檢查資料是否充足
     if (!hr || !hr.start || !hr.end || !times || times.length === 0 || panes.current.length === 0) {
@@ -229,45 +206,73 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       return
     }
 
-    // 2. ✅ 改用 BusinessDay，避免 logical index 不穩或對不上
-    const bdStart = toBusinessDay(hr.start)
-    const bdEnd = toBusinessDay(hr.end)
-    if (!bdStart || !bdEnd) {
+    // 2. 將 Python 傳來的 start/end 轉成 Timestamp
+    const tStart = normalizeDate(hr.start)
+    const tEnd = normalizeDate(hr.end)
+
+    if (tStart === null || tEnd === null) {
       mask.style.display = "none"
       return
     }
 
-    // 3. 計算像素位置：直接用 timeToCoordinate
+    // 3. 在 times 陣列中尋找對應的 Index
+    // startIdx: 第一個 >= tStart 的位置
+    let startIdx = -1
+    for (let i = 0; i < times.length; i++) {
+      if (times[i] >= tStart) {
+        startIdx = i
+        break
+      }
+    }
+
+    // endIdx: 最後一個 <= tEnd 的位置
+    let endIdx = -1
+    for (let i = times.length - 1; i >= 0; i--) {
+      if (times[i] <= tEnd) {
+        endIdx = i
+        break
+      }
+    }
+
+    // 如果找不到或範圍無效
+    if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) {
+      mask.style.display = "none"
+      return
+    }
+
+    // 4. 計算像素位置
     const p0 = panes.current[0]
     const timeScale = p0.chart.timeScale()
 
-    const x1 = timeScale.timeToCoordinate(bdStart as any)
-    const x2 = timeScale.timeToCoordinate(bdEnd as any)
+    const x1 = timeScale.logicalToCoordinate(startIdx as any)
+    const x2 = timeScale.logicalToCoordinate(endIdx as any)
 
-    if (x1 == null || x2 == null) {
-      // 可能是 range 完全不在目前資料/可視範圍或 chart 尚未 ready
+    // 重新取得確實的座標 (若是 null 則給極端值讓遮罩至少能顯示/或被判定為無效)
+    const safeX1 = x1 ?? -100000
+    const safeX2 = x2 ?? -100000
+
+    // ✅ 防呆：避免 NaN/Infinity 造成 NaNpx
+    if (!Number.isFinite(safeX1) || !Number.isFinite(safeX2)) {
       mask.style.display = "none"
       return
     }
 
-    // 4. 寬度微調：用 barSpacing（可取得就用，取不到就 fallback）
-    let barSpacing = 6
-    try {
-      const opts: any = (timeScale as any).options?.()
-      if (opts && typeof opts.barSpacing === "number") barSpacing = opts.barSpacing
-    } catch {}
-
-    const safeLeft = Math.min(x1, x2) - barSpacing * 0.5
-    const safeRight = Math.max(x1, x2) + barSpacing * 0.5
-
     const hostRect = host.getBoundingClientRect()
     const paneRect = p0.container.getBoundingClientRect()
+
+    // 計算相對於 host 的偏移量
     const offsetX = paneRect.left - hostRect.left
 
-    const styleLeft = offsetX + safeLeft
-    const styleWidth = safeRight - safeLeft
+    // ✅ 核心修正：不要再用可能算出 NaN 的 barWidth 估算
+    // 直接用座標 x1/x2 + 固定 padding 算遮罩範圍
+    const padding = 3 // 你要更寬可以調大，例如 6、8
+    const left = Math.min(safeX1, safeX2) - padding
+    const right = Math.max(safeX1, safeX2) + padding
 
-    if (!isFinite(styleLeft) || !isFinite(styleWidth) || styleWidth <= 0) {
+    const styleLeft = offsetX + left
+    const styleWidth = right - left
+
+    if (!Number.isFinite(styleLeft) || !Number.isFinite(styleWidth) || styleWidth <= 0) {
       mask.style.display = "none"
       return
     }
@@ -311,7 +316,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   useEffect(() => {
     if (!chartsData?.length) return
 
-    // 重建策略
+    // 如果已經有 instances，我們可以選擇 destroy 重建以確保資料乾淨
+    // 為求穩健，這裡採用重建策略
     chartInstances.current.forEach((c) => c && c.remove())
     chartInstances.current = []
     panes.current = []
@@ -393,7 +399,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           api.setData(s.data)
           if (s.markers) api.setMarkers(s.markers)
 
-          // 儲存主圖 (第一張圖) 的時間序列，並正規化（保留你的原邏輯）
+          // 儲存主圖 (第一張圖) 的時間序列，並正規化
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
             primaryTimesRef.current = s.data
               .map((d: any) => normalizeDate(d.time))
@@ -482,7 +488,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     }
 
     // 初始化遮罩
-    setTimeout(updateGlobalMask, 120)
+    setTimeout(updateGlobalMask, 100)
 
     // Resize Observer
     const ro = new ResizeObserver(() => {
@@ -526,7 +532,9 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
       // Candlestick
       const isUp = data.close >= data.open
       color = isUp ? opts.upColor : opts.downColor
-      valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(data.low)} C:${toFixedMaybe(data.close)}`
+      valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(
+        data.low
+      )} C:${toFixedMaybe(data.close)}`
     } else if (data.value !== undefined) {
       // Line / Histogram
       valStr = toFixedMaybe(data.value)
