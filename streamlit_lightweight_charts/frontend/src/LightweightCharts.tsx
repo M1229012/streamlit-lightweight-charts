@@ -98,7 +98,7 @@ function ensureGlobalVLine(host: HTMLDivElement) {
   return line
 }
 
-// ✅ [新增] 建立全域遮罩元素 (Global Mask)
+// 建立全域遮罩元素 (Global Mask)
 function ensureGlobalMask(host: HTMLDivElement) {
   let mask = host.querySelector(".global-mask") as HTMLDivElement | null
   if (!mask) {
@@ -113,7 +113,7 @@ function ensureGlobalMask(host: HTMLDivElement) {
       display: "none",
       pointerEvents: "none",
       zIndex: "100", // 在圖表之上，Tooltip 之下
-      // ✅ [配色調整] 針對黑色背景，使用淡金色半透明遮罩
+      // 針對黑色背景，使用淡金色半透明遮罩
       background: "rgba(255, 215, 0, 0.12)", 
       borderLeft: "1px dashed rgba(255, 215, 0, 0.4)",
       borderRight: "1px dashed rgba(255, 215, 0, 0.4)",
@@ -136,7 +136,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   const globalMaskRef = useRef<HTMLDivElement | null>(null)
   const primaryTimesRef = useRef<any[]>([])
 
-  // ✅ [修正] 使用 useMemo 動態建立 Refs，解決切換圖表時 hooks 數量不一致導致的紅字錯誤
+  // 使用 useMemo 動態建立 Refs，解決切換圖表時 hooks 數量不一致導致的紅字錯誤
   const chartElRefs = useMemo(() => {
     return Array(chartsData.length)
       .fill(null)
@@ -177,7 +177,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           textColor: "#d1d4dc",
           ...(chartsData[i].chart?.layout || {}),
         },
-        // ✅ [修正] 強制設定右側座標軸最小寬度，解決主圖與副圖十字線對不齊的問題
+        // 強制設定右側座標軸最小寬度，解決主圖與副圖十字線對不齊的問題
         rightPriceScale: {
           visible: true,
           minimumWidth: 70, 
@@ -341,7 +341,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       pane.tooltip.style.display = "block"
     }
 
-    // ✅ [核心邏輯] 更新全域遮罩的位置與大小
+    // ✅ [核心修正] 更新全域遮罩的位置與大小
     const updateGlobalMask = () => {
       const host = chartsContainerRef.current
       const mask = globalMaskRef.current
@@ -359,9 +359,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const startStr = String(hr.start)
       const endStr = String(hr.end)
 
-      // 找大於等於 startStr 的第一個點
       const startIdx = times.findIndex((t: any) => String(t) >= startStr)
-      // 找小於等於 endStr 的最後一個點
       let endIdx = -1
       for (let i = times.length - 1; i >= 0; i--) {
         if (String(times[i]) <= endStr) {
@@ -378,15 +376,29 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       // 3. 計算座標 (Pixel Coordinates)
       const p0 = panes.current[0]
       const chart0 = p0.chart
+      const timeScale = chart0.timeScale()
 
       // 使用 logicalToCoordinate 將邏輯索引轉為螢幕 X 座標
-      const x1Local = chart0.timeScale().logicalToCoordinate(startIdx as any)
-      const x2Local = chart0.timeScale().logicalToCoordinate(endIdx as any)
+      let x1Local = timeScale.logicalToCoordinate(startIdx as any)
+      let x2Local = timeScale.logicalToCoordinate(endIdx as any)
       
-      // 若座標計算失敗 (例如該時間點還沒載入或不在範圍內)，則隱藏
-      if (x1Local == null || x2Local == null) {
+      // ✅ [修正關鍵] 更寬容的座標判斷：處理區間部分超出視窗的情況
+      const scaleWidth = timeScale.width()
+
+      // 情況 1: 整個區間都在視窗外 -> 隱藏
+      if (x1Local === null && x2Local === null) {
         mask.style.display = "none"
         return
+      }
+
+      // 情況 2: 起始點在視窗左側外面 -> 設為 0 (視窗最左邊)
+      if (x1Local === null) {
+        x1Local = 0
+      }
+
+      // 情況 3: 結束點在視窗右側外面 -> 設為視窗寬度 (視窗最右邊)
+      if (x2Local === null) {
+        x2Local = scaleWidth
       }
 
       // 4. 計算遮罩的 Left 與 Width
@@ -395,17 +407,19 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       // 因為 mask 是掛在 host 下，所以要加上 pane 相對 host 的偏移
       const offsetX = paneRect.left - hostRect.left
 
+      // 確保 x1 <= x2
       let left = offsetX + Math.min(x1Local, x2Local)
       let right = offsetX + Math.max(x1Local, x2Local)
 
       // 5. 修正 Bar Spacing (讓遮罩邊緣稍微擴大，包住 K 線柱體)
       const barSpacing =
-        (chart0.timeScale() as any)?.options?.()?.barSpacing ??
+        (timeScale as any)?.options?.()?.barSpacing ??
         (chart0 as any)?.options?.()?.timeScale?.barSpacing
 
       if (typeof barSpacing === "number") {
-        left -= barSpacing / 2
-        right += barSpacing / 2
+        // 只有當邊界在視窗內時才需要擴大，避免超出視窗
+        if (x1Local > 0) left -= barSpacing / 2
+        if (x2Local < scaleWidth) right += barSpacing / 2
       }
 
       // 6. 套用樣式
@@ -481,7 +495,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       p.chart.subscribeCrosshairMove((param) => syncAll(p, param))
     })
 
-    // ✅ 當可視範圍改變時 (縮放/平移)，即時更新遮罩位置
+    // 當可視範圍改變時 (縮放/平移)，即時更新遮罩位置
     const validCharts = chartInstances.current.filter((c): c is IChartApi => c !== null)
     if (validCharts.length > 1) {
       let syncingRange = false
@@ -505,7 +519,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     }
 
     // 初始化時更新一次遮罩
-    updateGlobalMask()
+    // 使用 setTimeout 確保在圖表渲染完成後才計算位置
+    setTimeout(() => updateGlobalMask(), 0)
 
     const onResize = () => updateGlobalMask()
     window.addEventListener("resize", onResize)
