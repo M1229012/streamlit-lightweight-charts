@@ -98,6 +98,7 @@ function ensureGlobalVLine(host: HTMLDivElement) {
   return line
 }
 
+// ✅ [新增] 建立全域遮罩元素 (Global Mask)
 function ensureGlobalMask(host: HTMLDivElement) {
   let mask = host.querySelector(".global-mask") as HTMLDivElement | null
   if (!mask) {
@@ -112,7 +113,10 @@ function ensureGlobalMask(host: HTMLDivElement) {
       display: "none",
       pointerEvents: "none",
       zIndex: "100", // 在圖表之上，Tooltip 之下
-      background: "rgba(255, 235, 59, 0.15)", // 半透明黃色
+      // ✅ [配色調整] 針對黑色背景，使用淡金色半透明遮罩
+      background: "rgba(255, 215, 0, 0.12)", 
+      borderLeft: "1px dashed rgba(255, 215, 0, 0.4)",
+      borderRight: "1px dashed rgba(255, 215, 0, 0.4)",
     })
     const style = getComputedStyle(host)
     if (style.position === "static") host.style.position = "relative"
@@ -337,11 +341,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       pane.tooltip.style.display = "block"
     }
 
+    // ✅ [核心邏輯] 更新全域遮罩的位置與大小
     const updateGlobalMask = () => {
       const host = chartsContainerRef.current
       const mask = globalMaskRef.current
       if (!host || !mask) return
 
+      // 1. 取得後端傳入的 Highlight Range (統計區間)
       const hr = chartsData?.[0]?.highlightRange
       const times = primaryTimesRef.current
       if (!hr || !hr.start || !hr.end || !times?.length || !panes.current?.length) {
@@ -349,10 +355,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
+      // 2. 找到對應的時間索引 (Logical Index)
       const startStr = String(hr.start)
       const endStr = String(hr.end)
 
+      // 找大於等於 startStr 的第一個點
       const startIdx = times.findIndex((t: any) => String(t) >= startStr)
+      // 找小於等於 endStr 的最後一個點
       let endIdx = -1
       for (let i = times.length - 1; i >= 0; i--) {
         if (String(times[i]) <= endStr) {
@@ -366,22 +375,30 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
+      // 3. 計算座標 (Pixel Coordinates)
       const p0 = panes.current[0]
       const chart0 = p0.chart
 
+      // 使用 logicalToCoordinate 將邏輯索引轉為螢幕 X 座標
       const x1Local = chart0.timeScale().logicalToCoordinate(startIdx as any)
       const x2Local = chart0.timeScale().logicalToCoordinate(endIdx as any)
+      
+      // 若座標計算失敗 (例如該時間點還沒載入或不在範圍內)，則隱藏
       if (x1Local == null || x2Local == null) {
         mask.style.display = "none"
         return
       }
 
+      // 4. 計算遮罩的 Left 與 Width
       const hostRect = host.getBoundingClientRect()
       const paneRect = p0.container.getBoundingClientRect()
+      // 因為 mask 是掛在 host 下，所以要加上 pane 相對 host 的偏移
+      const offsetX = paneRect.left - hostRect.left
 
-      let left = (paneRect.left - hostRect.left) + Math.min(x1Local, x2Local)
-      let right = (paneRect.left - hostRect.left) + Math.max(x1Local, x2Local)
+      let left = offsetX + Math.min(x1Local, x2Local)
+      let right = offsetX + Math.max(x1Local, x2Local)
 
+      // 5. 修正 Bar Spacing (讓遮罩邊緣稍微擴大，包住 K 線柱體)
       const barSpacing =
         (chart0.timeScale() as any)?.options?.()?.barSpacing ??
         (chart0 as any)?.options?.()?.timeScale?.barSpacing
@@ -391,6 +408,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         right += barSpacing / 2
       }
 
+      // 6. 套用樣式
       mask.style.left = `${left}px`
       mask.style.width = `${Math.max(0, right - left)}px`
       mask.style.display = "block"
@@ -463,6 +481,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       p.chart.subscribeCrosshairMove((param) => syncAll(p, param))
     })
 
+    // ✅ 當可視範圍改變時 (縮放/平移)，即時更新遮罩位置
     const validCharts = chartInstances.current.filter((c): c is IChartApi => c !== null)
     if (validCharts.length > 1) {
       let syncingRange = false
@@ -475,7 +494,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             .filter((c) => c !== chart)
             .forEach((c) => c.timeScale().setVisibleLogicalRange(range))
           syncingRange = false
-          updateGlobalMask()
+          updateGlobalMask() // 更新遮罩
         })
       })
     } else {
@@ -485,6 +504,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
     }
 
+    // 初始化時更新一次遮罩
     updateGlobalMask()
 
     const onResize = () => updateGlobalMask()
