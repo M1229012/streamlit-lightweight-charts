@@ -112,11 +112,11 @@ function ensureGlobalMask(host: HTMLDivElement) {
       width: "0px",
       display: "none",
       pointerEvents: "none",
-      zIndex: "100", // 在圖表之上，Tooltip 之下
-      // 針對黑色背景，使用淡金色半透明遮罩
-      background: "rgba(255, 215, 0, 0.12)", 
-      borderLeft: "1px dashed rgba(255, 215, 0, 0.4)",
-      borderRight: "1px dashed rgba(255, 215, 0, 0.4)",
+      zIndex: "5", // 在圖表之上，Tooltip 之下
+      // ✅ [配色調整] 針對黑色背景，使用更明顯的亮黃色
+      background: "rgba(255, 235, 59, 0.15)", 
+      borderLeft: "1px dashed rgba(255, 235, 59, 0.6)",
+      borderRight: "1px dashed rgba(255, 235, 59, 0.6)",
     })
     const style = getComputedStyle(host)
     if (style.position === "static") host.style.position = "relative"
@@ -136,7 +136,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   const globalMaskRef = useRef<HTMLDivElement | null>(null)
   const primaryTimesRef = useRef<any[]>([])
 
-  // 使用 useMemo 動態建立 Refs，解決切換圖表時 hooks 數量不一致導致的紅字錯誤
+  // 使用 useMemo 動態建立 Refs
   const chartElRefs = useMemo(() => {
     return Array(chartsData.length)
       .fill(null)
@@ -355,11 +355,16 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
+      const p0 = panes.current[0]
+      const chart0 = p0.chart
+      const timeScale = chart0.timeScale()
+
       // 2. 找到對應的時間索引 (Logical Index)
       const startStr = String(hr.start)
       const endStr = String(hr.end)
 
       const startIdx = times.findIndex((t: any) => String(t) >= startStr)
+      // 找結束點
       let endIdx = -1
       for (let i = times.length - 1; i >= 0; i--) {
         if (String(times[i]) <= endStr) {
@@ -373,57 +378,62 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
-      // 3. 計算座標 (Pixel Coordinates)
-      const p0 = panes.current[0]
-      const chart0 = p0.chart
-      const timeScale = chart0.timeScale()
-
-      // 使用 logicalToCoordinate 將邏輯索引轉為螢幕 X 座標
-      let x1Local = timeScale.logicalToCoordinate(startIdx as any)
-      let x2Local = timeScale.logicalToCoordinate(endIdx as any)
-      
-      // ✅ [修正關鍵] 更寬容的座標判斷：處理區間部分超出視窗的情況
-      const scaleWidth = timeScale.width()
-
-      // 情況 1: 整個區間都在視窗外 -> 隱藏
-      if (x1Local === null && x2Local === null) {
+      // 3. ✅ 取得目前的「可視範圍」 (Visible Logical Range)
+      const visibleRange = timeScale.getVisibleLogicalRange();
+      if (!visibleRange) {
         mask.style.display = "none"
         return
       }
 
-      // 情況 2: 起始點在視窗左側外面 -> 設為 0 (視窗最左邊)
-      if (x1Local === null) {
-        x1Local = 0
+      // 4. ✅ 檢查交集：如果選取範圍完全在視窗外，就隱藏
+      if (endIdx < visibleRange.from || startIdx > visibleRange.to) {
+        mask.style.display = "none"
+        return
       }
 
-      // 情況 3: 結束點在視窗右側外面 -> 設為視窗寬度 (視窗最右邊)
-      if (x2Local === null) {
-        x2Local = scaleWidth
+      // 5. ✅ 計算座標：根據邊界情況鎖定座標
+      const width = timeScale.width();
+      let left = 0;
+      let right = width;
+
+      // 計算左邊界 (Left)
+      // 如果起始點在視窗左側外面 (startIdx < visibleRange.from)，則 left = 0
+      // 否則算出實際座標
+      if (startIdx >= visibleRange.from) {
+         const c = timeScale.logicalToCoordinate(startIdx as any);
+         left = c !== null ? c : 0;
+      } else {
+         left = 0; // 鎖定在最左邊
       }
 
-      // 4. 計算遮罩的 Left 與 Width
+      // 計算右邊界 (Right)
+      // 如果結束點在視窗右側外面 (endIdx > visibleRange.to)，則 right = width
+      // 否則算出實際座標
+      if (endIdx <= visibleRange.to) {
+         const c = timeScale.logicalToCoordinate(endIdx as any);
+         right = c !== null ? c : width;
+      } else {
+         right = width; // 鎖定在最右邊
+      }
+
+      // 6. 套用偏移 (Offset)
       const hostRect = host.getBoundingClientRect()
       const paneRect = p0.container.getBoundingClientRect()
-      // 因為 mask 是掛在 host 下，所以要加上 pane 相對 host 的偏移
       const offsetX = paneRect.left - hostRect.left
 
-      // 確保 x1 <= x2
-      let left = offsetX + Math.min(x1Local, x2Local)
-      let right = offsetX + Math.max(x1Local, x2Local)
-
-      // 5. 修正 Bar Spacing (讓遮罩邊緣稍微擴大，包住 K 線柱體)
+      // 7. 修正 Bar Spacing (讓遮罩稍微寬一點，包住 K 線)
       const barSpacing =
         (timeScale as any)?.options?.()?.barSpacing ??
         (chart0 as any)?.options?.()?.timeScale?.barSpacing
 
       if (typeof barSpacing === "number") {
-        // 只有當邊界在視窗內時才需要擴大，避免超出視窗
-        if (x1Local > 0) left -= barSpacing / 2
-        if (x2Local < scaleWidth) right += barSpacing / 2
+        // 只有當邊界在視窗內時才需要擴大
+        if (startIdx >= visibleRange.from) left -= barSpacing / 2
+        if (endIdx <= visibleRange.to) right += barSpacing / 2
       }
 
-      // 6. 套用樣式
-      mask.style.left = `${left}px`
+      // 8. 最終套用樣式
+      mask.style.left = `${offsetX + left}px`
       mask.style.width = `${Math.max(0, right - left)}px`
       mask.style.display = "block"
     }
@@ -520,7 +530,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
     // 初始化時更新一次遮罩
     // 使用 setTimeout 確保在圖表渲染完成後才計算位置
-    setTimeout(() => updateGlobalMask(), 0)
+    setTimeout(() => updateGlobalMask(), 50)
 
     const onResize = () => updateGlobalMask()
     window.addEventListener("resize", onResize)
