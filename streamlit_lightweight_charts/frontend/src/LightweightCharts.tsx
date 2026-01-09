@@ -98,7 +98,7 @@ function ensureGlobalVLine(host: HTMLDivElement) {
   return line
 }
 
-// 建立全域遮罩元素 (Global Mask) - 覆蓋整個主圖+副圖高度
+// 建立全域遮罩元素 (Global Mask)
 function ensureGlobalMask(host: HTMLDivElement) {
   let mask = host.querySelector(".global-mask") as HTMLDivElement | null
   if (!mask) {
@@ -107,14 +107,14 @@ function ensureGlobalMask(host: HTMLDivElement) {
     Object.assign(mask.style, {
       position: "absolute",
       top: "0px",
-      bottom: "0px",
+      bottom: "0px", // 確保覆蓋整個 Host 高度
       left: "0px",
       width: "0px",
       display: "none",
       pointerEvents: "none",
-      // ✅ 提高層級：一定蓋在 canvas 上，但仍低於 tooltip(1200) 與 vline(2000)
-      zIndex: "900",
-      background: "rgba(255, 235, 59, 0.15)",
+      zIndex: "900", 
+      // 針對黑色背景，使用淡金色半透明遮罩
+      background: "rgba(255, 235, 59, 0.15)", 
       borderLeft: "1px dashed rgba(255, 235, 59, 0.65)",
       borderRight: "1px dashed rgba(255, 235, 59, 0.65)",
     })
@@ -126,40 +126,28 @@ function ensureGlobalMask(host: HTMLDivElement) {
 }
 
 /**
- * ✅ 把 time 轉成可比較的「key」
- * - number(UTCTimestamp seconds) -> 直接用
- * - {year,month,day} -> YYYYMMDD number
- * - "YYYY-MM-DD" -> YYYYMMDD number
- * - 其他 -> null
+ * ✅ 優化時間比對邏輯：統一轉為 YYYYMMDD 整數進行比較
  */
 function timeKey(t: any): number | null {
   if (t == null) return null
 
-  if (typeof t === "number" && Number.isFinite(t)) {
-    return t // UTCTimestamp 秒
-  }
-
+  // 1. 如果是字串 "YYYY-MM-DD"
   if (typeof t === "string") {
-    // YYYY-MM-DD
-    const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/)
-    if (m) {
-      const y = Number(m[1])
-      const mo = Number(m[2])
-      const d = Number(m[3])
-      return y * 10000 + mo * 100 + d
-    }
-    // 若是 "1700000000" 這類 unix 字串
-    const n = Number(t)
-    if (Number.isFinite(n)) return n
+    // 移除所有非數字字符 (2023-01-01 -> 20230101)
+    const s = t.replace(/\D/g, "")
+    if (s.length === 8) return parseInt(s, 10)
     return null
   }
 
+  // 2. 如果是物件 {year, month, day}
   if (typeof t === "object" && t && "year" in t && "month" in t && "day" in t) {
-    const y = Number(t.year)
-    const mo = Number(t.month)
-    const d = Number(t.day)
-    if ([y, mo, d].every((x) => Number.isFinite(x))) return y * 10000 + mo * 100 + d
+    return t.year * 10000 + t.month * 100 + t.day
   }
+
+  // 3. 如果是 Timestamp (秒)，這裡假設你的資料不是用 Timestamp，但為了相容保留
+  // 若是 Timestamp，比較難直接轉 YYYYMMDD，除非有時區資訊。
+  // 在此案例中，你的 Python code 傳的是 'YYYY-MM-DD' 字串，所以主要走第 1 條路徑。
+  if (typeof t === "number") return t 
 
   return null
 }
@@ -175,17 +163,15 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   const globalMaskRef = useRef<HTMLDivElement | null>(null)
   const primaryTimesRef = useRef<any[]>([])
 
-  // ✅ 讓「highlightRange 變更」可以不重建圖表就更新遮罩
   const updateGlobalMaskRef = useRef<null | (() => void)>(null)
 
-  // 用 useMemo 動態建立 Refs
   const chartElRefs = useMemo(() => {
     return Array(chartsData.length)
       .fill(null)
-      .map(() => React.createRef<HTMLDivElement>())
-  }, [chartsData.length])
+      .map(() => React.createRef<HTMLDivElement>());
+  }, [chartsData.length]);
 
-  // 只用來觸發「遮罩更新」
+  // highlightRangeSig 用來觸發遮罩更新
   const highlightRangeSig = useMemo(() => {
     const hr = (renderData.args?.["charts"]?.[0] as any)?.highlightRange
     if (!hr) return ""
@@ -196,7 +182,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     if (!chartsData?.length) return
     if (chartElRefs.some((ref) => !ref.current)) return
 
-    // 清理舊 chart
+    // 清理
     chartInstances.current.forEach((c) => c && c.remove())
     chartInstances.current = []
     panes.current = []
@@ -212,7 +198,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       })
     }
 
-    // 建立每個 pane
+    // 建立圖表
     chartElRefs.forEach((ref, i) => {
       const container = ref.current as HTMLDivElement | null
       if (!container) return
@@ -228,7 +214,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         },
         rightPriceScale: {
           visible: true,
-          minimumWidth: 70,
+          minimumWidth: 70, 
           borderColor: "rgba(197, 203, 206, 0.8)",
           ...(chartsData[i].chart?.rightPriceScale || {}),
         },
@@ -258,7 +244,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const tooltip = ensurePaneTooltip(container)
       panes.current[i] = { chart, container, tooltip, series: [] }
 
-      // 加 series
       for (const s of chartsData[i].series) {
         let api: ISeriesApi<any> | null = null
 
@@ -286,12 +271,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         }
 
         if (api) {
-          if (s.priceScale) chart.priceScale(s.options?.priceScaleId || "").applyOptions(s.priceScale)
+          if (s.priceScale)
+            chart.priceScale(s.options?.priceScaleId || "").applyOptions(s.priceScale)
 
           api.setData(s.data)
           if (s.markers) api.setMarkers(s.markers)
 
-          // 儲存主圖時間序列
+          // 儲存主圖時間序列 (通常是第一張圖的第一個 Series)
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
             primaryTimesRef.current = s.data.map((d: any) => d?.time)
           }
@@ -388,7 +374,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       pane.tooltip.style.display = "block"
     }
 
-    // ✅ 更新全域遮罩的位置與大小（使用 timeKey，支援 number/object/string）
+    // ✅ [核心修正] 更新全域遮罩
     const updateGlobalMask = () => {
       const host = chartsContainerRef.current
       const mask = globalMaskRef.current
@@ -397,42 +383,39 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const hr = chartsData?.[0]?.highlightRange
       const times = primaryTimesRef.current
 
+      // console.log("Highlight Range:", hr);
+      // console.log("Times sample:", times?.slice(0, 5));
+
       const startKey = timeKey(hr?.start)
       const endKey = timeKey(hr?.end)
+
       if (startKey == null || endKey == null || !times?.length || !panes.current?.length) {
         mask.style.display = "none"
         return
       }
 
-      const keys = times.map((t: any) => timeKey(t)).filter((k: any) => k != null) as number[]
-      if (!keys.length) {
-        mask.style.display = "none"
-        return
-      }
-
-      // 找 startIdx：第一個 >= startKey
+      // 找出資料中「第一個 >= startKey」的索引
       let startIdx = -1
       for (let i = 0; i < times.length; i++) {
         const k = timeKey(times[i])
-        if (k == null) continue
-        if (k >= startKey) {
+        if (k != null && k >= startKey) {
           startIdx = i
           break
         }
       }
 
-      // 找 endIdx：最後一個 <= endKey
+      // 找出資料中「最後一個 <= endKey」的索引
       let endIdx = -1
       for (let i = times.length - 1; i >= 0; i--) {
         const k = timeKey(times[i])
-        if (k == null) continue
-        if (k <= endKey) {
+        if (k != null && k <= endKey) {
           endIdx = i
           break
         }
       }
 
-      if (startIdx < 0 || endIdx < 0 || endIdx < startIdx) {
+      // 如果根本找不到對應區間（例如選的日期比所有資料都早或晚）
+      if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
         mask.style.display = "none"
         return
       }
@@ -440,13 +423,14 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const p0 = panes.current[0]
       const chart0 = p0.chart
       const timeScale = chart0.timeScale()
-
       const visibleRange = timeScale.getVisibleLogicalRange()
+
       if (!visibleRange) {
         mask.style.display = "none"
         return
       }
 
+      // 檢查是否與可視範圍有交集
       if (endIdx < visibleRange.from || startIdx > visibleRange.to) {
         mask.style.display = "none"
         return
@@ -456,6 +440,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       let left = 0
       let right = width
 
+      // 計算左邊界
       if (startIdx >= visibleRange.from) {
         const c = timeScale.logicalToCoordinate(startIdx as any)
         left = c !== null ? c : 0
@@ -463,6 +448,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         left = 0
       }
 
+      // 計算右邊界
       if (endIdx <= visibleRange.to) {
         const c = timeScale.logicalToCoordinate(endIdx as any)
         right = c !== null ? c : width
@@ -474,7 +460,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const paneRect = p0.container.getBoundingClientRect()
       const offsetX = paneRect.left - hostRect.left
 
-      // barSpacing 讓遮罩稍微寬一點包住K線
+      // Bar Spacing 修正
       let barSpacing: any = null
       try {
         barSpacing = (timeScale as any)?.options?.()?.barSpacing
@@ -496,7 +482,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       mask.style.display = w > 0 ? "block" : "none"
     }
 
-    // 讓外部 useEffect 可以直接呼叫更新遮罩
     updateGlobalMaskRef.current = updateGlobalMask
 
     const syncAll = (sourcePane: PaneMeta, param: MouseEventParams) => {
@@ -566,7 +551,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       p.chart.subscribeCrosshairMove((param) => syncAll(p, param))
     })
 
-    // 可視範圍改變 (縮放/平移) -> 同步 + 更新遮罩
     const validCharts = chartInstances.current.filter((c): c is IChartApi => c !== null)
     if (validCharts.length > 1) {
       let syncingRange = false
@@ -587,10 +571,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       if (c0) c0.timeScale().subscribeVisibleLogicalRangeChange(() => updateGlobalMask())
     }
 
-    // 初始化時更新一次遮罩
     setTimeout(() => updateGlobalMask(), 50)
 
-    // ✅ 用 ResizeObserver 比 window resize 更準（容器寬高變了也會更新遮罩）
     const hostEl = chartsContainerRef.current
     let ro: ResizeObserver | null = null
     if (hostEl && "ResizeObserver" in window) {
@@ -611,7 +593,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     }
   }, [chartsData, chartElRefs])
 
-  // ✅ highlightRange 改變時，直接更新遮罩（不重建 chart）
   useEffect(() => {
     if (updateGlobalMaskRef.current) updateGlobalMaskRef.current()
   }, [highlightRangeSig])
