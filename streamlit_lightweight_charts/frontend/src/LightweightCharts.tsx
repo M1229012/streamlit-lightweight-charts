@@ -98,7 +98,7 @@ function ensureGlobalVLine(host: HTMLDivElement) {
   return line
 }
 
-// 建立全域遮罩元素 (Global Mask)
+// 建立全域遮罩元素 (Global Mask) - 覆蓋整個主圖+副圖高度
 function ensureGlobalMask(host: HTMLDivElement) {
   let mask = host.querySelector(".global-mask") as HTMLDivElement | null
   if (!mask) {
@@ -107,22 +107,61 @@ function ensureGlobalMask(host: HTMLDivElement) {
     Object.assign(mask.style, {
       position: "absolute",
       top: "0px",
-      bottom: "0px", // 確保覆蓋整個 Host 高度
+      bottom: "0px",
       left: "0px",
       width: "0px",
       display: "none",
       pointerEvents: "none",
-      zIndex: "5", // 在圖表之上，Tooltip 之下
-      // ✅ [配色調整] 針對黑色背景，使用更明顯的亮黃色
-      background: "rgba(255, 235, 59, 0.15)", 
-      borderLeft: "1px dashed rgba(255, 235, 59, 0.6)",
-      borderRight: "1px dashed rgba(255, 235, 59, 0.6)",
+      // ✅ 提高層級：一定蓋在 canvas 上，但仍低於 tooltip(1200) 與 vline(2000)
+      zIndex: "900",
+      background: "rgba(255, 235, 59, 0.15)",
+      borderLeft: "1px dashed rgba(255, 235, 59, 0.65)",
+      borderRight: "1px dashed rgba(255, 235, 59, 0.65)",
     })
     const style = getComputedStyle(host)
     if (style.position === "static") host.style.position = "relative"
     host.appendChild(mask)
   }
   return mask
+}
+
+/**
+ * ✅ 把 time 轉成可比較的「key」
+ * - number(UTCTimestamp seconds) -> 直接用
+ * - {year,month,day} -> YYYYMMDD number
+ * - "YYYY-MM-DD" -> YYYYMMDD number
+ * - 其他 -> null
+ */
+function timeKey(t: any): number | null {
+  if (t == null) return null
+
+  if (typeof t === "number" && Number.isFinite(t)) {
+    return t // UTCTimestamp 秒
+  }
+
+  if (typeof t === "string") {
+    // YYYY-MM-DD
+    const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    if (m) {
+      const y = Number(m[1])
+      const mo = Number(m[2])
+      const d = Number(m[3])
+      return y * 10000 + mo * 100 + d
+    }
+    // 若是 "1700000000" 這類 unix 字串
+    const n = Number(t)
+    if (Number.isFinite(n)) return n
+    return null
+  }
+
+  if (typeof t === "object" && t && "year" in t && "month" in t && "day" in t) {
+    const y = Number(t.year)
+    const mo = Number(t.month)
+    const d = Number(t.day)
+    if ([y, mo, d].every((x) => Number.isFinite(x))) return y * 10000 + mo * 100 + d
+  }
+
+  return null
 }
 
 const LightweightChartsMultiplePanes: React.VFC = () => {
@@ -136,12 +175,22 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   const globalMaskRef = useRef<HTMLDivElement | null>(null)
   const primaryTimesRef = useRef<any[]>([])
 
-  // 使用 useMemo 動態建立 Refs
+  // ✅ 讓「highlightRange 變更」可以不重建圖表就更新遮罩
+  const updateGlobalMaskRef = useRef<null | (() => void)>(null)
+
+  // 用 useMemo 動態建立 Refs
   const chartElRefs = useMemo(() => {
     return Array(chartsData.length)
       .fill(null)
-      .map(() => React.createRef<HTMLDivElement>());
-  }, [chartsData.length]);
+      .map(() => React.createRef<HTMLDivElement>())
+  }, [chartsData.length])
+
+  // 只用來觸發「遮罩更新」
+  const highlightRangeSig = useMemo(() => {
+    const hr = (renderData.args?.["charts"]?.[0] as any)?.highlightRange
+    if (!hr) return ""
+    return `${String(hr.start ?? "")}|${String(hr.end ?? "")}`
+  }, [renderData.args])
 
   useEffect(() => {
     if (!chartsData?.length) return
@@ -177,10 +226,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           textColor: "#d1d4dc",
           ...(chartsData[i].chart?.layout || {}),
         },
-        // 強制設定右側座標軸最小寬度，解決主圖與副圖十字線對不齊的問題
         rightPriceScale: {
           visible: true,
-          minimumWidth: 70, 
+          minimumWidth: 70,
           borderColor: "rgba(197, 203, 206, 0.8)",
           ...(chartsData[i].chart?.rightPriceScale || {}),
         },
@@ -238,8 +286,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         }
 
         if (api) {
-          if (s.priceScale)
-            chart.priceScale(s.options?.priceScaleId || "").applyOptions(s.priceScale)
+          if (s.priceScale) chart.priceScale(s.options?.priceScaleId || "").applyOptions(s.priceScale)
 
           api.setData(s.data)
           if (s.markers) api.setMarkers(s.markers)
@@ -341,33 +388,45 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       pane.tooltip.style.display = "block"
     }
 
-    // ✅ [核心修正] 更新全域遮罩的位置與大小
+    // ✅ 更新全域遮罩的位置與大小（使用 timeKey，支援 number/object/string）
     const updateGlobalMask = () => {
       const host = chartsContainerRef.current
       const mask = globalMaskRef.current
       if (!host || !mask) return
 
-      // 1. 取得後端傳入的 Highlight Range (統計區間)
       const hr = chartsData?.[0]?.highlightRange
       const times = primaryTimesRef.current
-      if (!hr || !hr.start || !hr.end || !times?.length || !panes.current?.length) {
+
+      const startKey = timeKey(hr?.start)
+      const endKey = timeKey(hr?.end)
+      if (startKey == null || endKey == null || !times?.length || !panes.current?.length) {
         mask.style.display = "none"
         return
       }
 
-      const p0 = panes.current[0]
-      const chart0 = p0.chart
-      const timeScale = chart0.timeScale()
+      const keys = times.map((t: any) => timeKey(t)).filter((k: any) => k != null) as number[]
+      if (!keys.length) {
+        mask.style.display = "none"
+        return
+      }
 
-      // 2. 找到對應的時間索引 (Logical Index)
-      const startStr = String(hr.start)
-      const endStr = String(hr.end)
+      // 找 startIdx：第一個 >= startKey
+      let startIdx = -1
+      for (let i = 0; i < times.length; i++) {
+        const k = timeKey(times[i])
+        if (k == null) continue
+        if (k >= startKey) {
+          startIdx = i
+          break
+        }
+      }
 
-      const startIdx = times.findIndex((t: any) => String(t) >= startStr)
-      // 找結束點
+      // 找 endIdx：最後一個 <= endKey
       let endIdx = -1
       for (let i = times.length - 1; i >= 0; i--) {
-        if (String(times[i]) <= endStr) {
+        const k = timeKey(times[i])
+        if (k == null) continue
+        if (k <= endKey) {
           endIdx = i
           break
         }
@@ -378,65 +437,67 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
-      // 3. ✅ 取得目前的「可視範圍」 (Visible Logical Range)
-      const visibleRange = timeScale.getVisibleLogicalRange();
+      const p0 = panes.current[0]
+      const chart0 = p0.chart
+      const timeScale = chart0.timeScale()
+
+      const visibleRange = timeScale.getVisibleLogicalRange()
       if (!visibleRange) {
         mask.style.display = "none"
         return
       }
 
-      // 4. ✅ 檢查交集：如果選取範圍完全在視窗外，就隱藏
       if (endIdx < visibleRange.from || startIdx > visibleRange.to) {
         mask.style.display = "none"
         return
       }
 
-      // 5. ✅ 計算座標：根據邊界情況鎖定座標
-      const width = timeScale.width();
-      let left = 0;
-      let right = width;
+      const width = timeScale.width()
+      let left = 0
+      let right = width
 
-      // 計算左邊界 (Left)
-      // 如果起始點在視窗左側外面 (startIdx < visibleRange.from)，則 left = 0
-      // 否則算出實際座標
       if (startIdx >= visibleRange.from) {
-         const c = timeScale.logicalToCoordinate(startIdx as any);
-         left = c !== null ? c : 0;
+        const c = timeScale.logicalToCoordinate(startIdx as any)
+        left = c !== null ? c : 0
       } else {
-         left = 0; // 鎖定在最左邊
+        left = 0
       }
 
-      // 計算右邊界 (Right)
-      // 如果結束點在視窗右側外面 (endIdx > visibleRange.to)，則 right = width
-      // 否則算出實際座標
       if (endIdx <= visibleRange.to) {
-         const c = timeScale.logicalToCoordinate(endIdx as any);
-         right = c !== null ? c : width;
+        const c = timeScale.logicalToCoordinate(endIdx as any)
+        right = c !== null ? c : width
       } else {
-         right = width; // 鎖定在最右邊
+        right = width
       }
 
-      // 6. 套用偏移 (Offset)
       const hostRect = host.getBoundingClientRect()
       const paneRect = p0.container.getBoundingClientRect()
       const offsetX = paneRect.left - hostRect.left
 
-      // 7. 修正 Bar Spacing (讓遮罩稍微寬一點，包住 K 線)
-      const barSpacing =
-        (timeScale as any)?.options?.()?.barSpacing ??
-        (chart0 as any)?.options?.()?.timeScale?.barSpacing
+      // barSpacing 讓遮罩稍微寬一點包住K線
+      let barSpacing: any = null
+      try {
+        barSpacing = (timeScale as any)?.options?.()?.barSpacing
+      } catch {}
+      if (barSpacing == null) {
+        try {
+          barSpacing = (chart0 as any)?.options?.()?.timeScale?.barSpacing
+        } catch {}
+      }
 
       if (typeof barSpacing === "number") {
-        // 只有當邊界在視窗內時才需要擴大
         if (startIdx >= visibleRange.from) left -= barSpacing / 2
         if (endIdx <= visibleRange.to) right += barSpacing / 2
       }
 
-      // 8. 最終套用樣式
+      const w = Math.max(0, right - left)
       mask.style.left = `${offsetX + left}px`
-      mask.style.width = `${Math.max(0, right - left)}px`
-      mask.style.display = "block"
+      mask.style.width = `${w}px`
+      mask.style.display = w > 0 ? "block" : "none"
     }
+
+    // 讓外部 useEffect 可以直接呼叫更新遮罩
+    updateGlobalMaskRef.current = updateGlobalMask
 
     const syncAll = (sourcePane: PaneMeta, param: MouseEventParams) => {
       const host = chartsContainerRef.current
@@ -505,7 +566,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       p.chart.subscribeCrosshairMove((param) => syncAll(p, param))
     })
 
-    // 當可視範圍改變時 (縮放/平移)，即時更新遮罩位置
+    // 可視範圍改變 (縮放/平移) -> 同步 + 更新遮罩
     const validCharts = chartInstances.current.filter((c): c is IChartApi => c !== null)
     if (validCharts.length > 1) {
       let syncingRange = false
@@ -518,30 +579,42 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             .filter((c) => c !== chart)
             .forEach((c) => c.timeScale().setVisibleLogicalRange(range))
           syncingRange = false
-          updateGlobalMask() // 更新遮罩
+          updateGlobalMask()
         })
       })
     } else {
       const c0 = validCharts[0]
-      if (c0) {
-        c0.timeScale().subscribeVisibleLogicalRangeChange(() => updateGlobalMask())
-      }
+      if (c0) c0.timeScale().subscribeVisibleLogicalRangeChange(() => updateGlobalMask())
     }
 
     // 初始化時更新一次遮罩
-    // 使用 setTimeout 確保在圖表渲染完成後才計算位置
     setTimeout(() => updateGlobalMask(), 50)
+
+    // ✅ 用 ResizeObserver 比 window resize 更準（容器寬高變了也會更新遮罩）
+    const hostEl = chartsContainerRef.current
+    let ro: ResizeObserver | null = null
+    if (hostEl && "ResizeObserver" in window) {
+      ro = new ResizeObserver(() => updateGlobalMask())
+      ro.observe(hostEl)
+    }
 
     const onResize = () => updateGlobalMask()
     window.addEventListener("resize", onResize)
 
     return () => {
       window.removeEventListener("resize", onResize)
+      if (ro) ro.disconnect()
+      updateGlobalMaskRef.current = null
       chartInstances.current.forEach((c) => c && c.remove())
       chartInstances.current = []
       panes.current = []
     }
-  }, [chartsData])
+  }, [chartsData, chartElRefs])
+
+  // ✅ highlightRange 改變時，直接更新遮罩（不重建 chart）
+  useEffect(() => {
+    if (updateGlobalMaskRef.current) updateGlobalMaskRef.current()
+  }, [highlightRangeSig])
 
   return (
     <div ref={chartsContainerRef}>
