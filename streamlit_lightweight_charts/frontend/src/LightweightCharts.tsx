@@ -243,47 +243,53 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     // 4. 計算像素位置
     const p0 = panes.current[0]
     
-    // 🔥 防呆：確認圖表是否存在
+    // 🔥 防呆：確認圖表是否存在，避免 Object is disposed
     if (!p0 || !p0.chart) return 
 
-    const timeScale = p0.chart.timeScale()
+    // 🔥 加上 try-catch 防止取 timeScale 時剛好被銷毀
+    try {
+        const timeScale = p0.chart.timeScale()
 
-    const x1 = timeScale.logicalToCoordinate(startIdx as any)
-    const x2 = timeScale.logicalToCoordinate(endIdx as any)
+        const x1 = timeScale.logicalToCoordinate(startIdx as any)
+        const x2 = timeScale.logicalToCoordinate(endIdx as any)
 
-    // 重新取得確實的座標 (若是 null 則給極端值讓遮罩至少能顯示/或被判定為無效)
-    const safeX1 = x1 ?? -100000
-    const safeX2 = x2 ?? -100000
+        // 重新取得確實的座標 (若是 null 則給極端值讓遮罩至少能顯示/或被判定為無效)
+        const safeX1 = x1 ?? -100000
+        const safeX2 = x2 ?? -100000
 
-    // ✅ 防呆：避免 NaN/Infinity 造成 NaNpx
-    if (!Number.isFinite(safeX1) || !Number.isFinite(safeX2)) {
-      mask.style.display = "none"
-      return
+        // ✅ 防呆：避免 NaN/Infinity 造成 NaNpx
+        if (!Number.isFinite(safeX1) || !Number.isFinite(safeX2)) {
+          mask.style.display = "none"
+          return
+        }
+
+        const hostRect = host.getBoundingClientRect()
+        const paneRect = p0.container.getBoundingClientRect()
+
+        // 計算相對於 host 的偏移量
+        const offsetX = paneRect.left - hostRect.left
+
+        // ✅ 核心修正：不要再用可能算出 NaN 的 barWidth 估算
+        // 直接用座標 x1/x2 + 固定 padding 算遮罩範圍
+        const padding = 3 // 你要更寬可以調大，例如 6、8
+        const left = Math.min(safeX1, safeX2) - padding
+        const right = Math.max(safeX1, safeX2) + padding
+
+        const styleLeft = offsetX + left
+        const styleWidth = right - left
+
+        if (!Number.isFinite(styleLeft) || !Number.isFinite(styleWidth) || styleWidth <= 0) {
+          mask.style.display = "none"
+          return
+        }
+
+        mask.style.display = "block"
+        mask.style.left = `${styleLeft}px`
+        mask.style.width = `${styleWidth}px`
+    } catch(e) {
+        // 圖表被銷毀，忽略錯誤
+        mask.style.display = "none"
     }
-
-    const hostRect = host.getBoundingClientRect()
-    const paneRect = p0.container.getBoundingClientRect()
-
-    // 計算相對於 host 的偏移量
-    const offsetX = paneRect.left - hostRect.left
-
-    // ✅ 核心修正：不要再用可能算出 NaN 的 barWidth 估算
-    // 直接用座標 x1/x2 + 固定 padding 算遮罩範圍
-    const padding = 3 // 你要更寬可以調大，例如 6、8
-    const left = Math.min(safeX1, safeX2) - padding
-    const right = Math.max(safeX1, safeX2) + padding
-
-    const styleLeft = offsetX + left
-    const styleWidth = right - left
-
-    if (!Number.isFinite(styleLeft) || !Number.isFinite(styleWidth) || styleWidth <= 0) {
-      mask.style.display = "none"
-      return
-    }
-
-    mask.style.display = "block"
-    mask.style.left = `${styleLeft}px`
-    mask.style.width = `${styleWidth}px`
   }
 
   // =========================================================
@@ -407,6 +413,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
             primaryTimesRef.current = s.data
               .map((d: any) => normalizeDate(d.time))
+              // 🔥 明確定義型別避免 TS 錯誤
               .filter((t:any): t is number => t !== null)
           }
 
@@ -440,6 +447,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       // 🔥 加 try-catch 防止來源圖表被銷毀時出錯
       try {
         const sourcePane = panes.current[sourcePaneIndex]
+        
+        // 如果圖表已銷毀，不做事
+        if (!sourcePane.chart) return
+
         const rawX = sourcePane.chart.timeScale().timeToCoordinate(param.time)
         if (rawX === null) return
 
@@ -457,21 +468,25 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       panes.current.forEach((target, idx) => {
         // 🔥 加 try-catch，如果圖表已銷毀就略過
         try {
+            // 如果目標圖表已銷毀，跳過
+            if (!target.chart) return
+
             // Tooltip
             const timeStr = formatTime(param.time)
             // 這裡需要用 coordinate 反推 logical index 來找數據
             const logical = sourceChart.timeScale().coordinateToLogical(param.point!.x)
             if (logical !== null) {
-            updatePaneTooltip(target, timeStr, Math.round(logical))
+              updatePaneTooltip(target, timeStr, Math.round(logical))
             }
 
             // Sync chart crosshair (如果不是來源圖表)
             if (idx !== sourcePaneIndex) {
-               if(target.chart) {
-                  target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
-               }
+               // 這是最容易報錯的地方，確保 target.chart 存在再呼叫
+               target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
             }
-        } catch(e) {}
+        } catch(e) {
+            // 忽略 Object is disposed 錯誤
+        }
       })
     }
 
@@ -514,7 +529,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       panes.current.forEach((p) => {
         // 🔥 加 try-catch
         try {
-            p.chart.resize(p.container.clientWidth, 300)
+            if (p.chart) {
+                p.chart.resize(p.container.clientWidth, 300)
+            }
         } catch(e) {}
       })
       updateGlobalMask()
