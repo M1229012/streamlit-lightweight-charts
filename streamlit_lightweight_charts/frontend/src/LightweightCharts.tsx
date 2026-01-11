@@ -242,6 +242,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
     // 4. 計算像素位置
     const p0 = panes.current[0]
+    
+    // 🔥 防呆：確認圖表是否存在
+    if (!p0 || !p0.chart) return 
+
     const timeScale = p0.chart.timeScale()
 
     const x1 = timeScale.logicalToCoordinate(startIdx as any)
@@ -433,31 +437,41 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
 
       // 顯示 VLine
-      const sourcePane = panes.current[sourcePaneIndex]
-      const rawX = sourcePane.chart.timeScale().timeToCoordinate(param.time)
-      if (rawX === null) return
+      // 🔥 加 try-catch 防止來源圖表被銷毀時出錯
+      try {
+        const sourcePane = panes.current[sourcePaneIndex]
+        const rawX = sourcePane.chart.timeScale().timeToCoordinate(param.time)
+        if (rawX === null) return
 
-      const hostRect = host.getBoundingClientRect()
-      const srcRect = sourcePane.container.getBoundingClientRect()
-      const absoluteX = srcRect.left - hostRect.left + rawX
+        const hostRect = host.getBoundingClientRect()
+        const srcRect = sourcePane.container.getBoundingClientRect()
+        const absoluteX = srcRect.left - hostRect.left + rawX
 
-      vline.style.left = `${absoluteX}px`
-      vline.style.display = "block"
+        vline.style.left = `${absoluteX}px`
+        vline.style.display = "block"
+      } catch (e) {
+        return 
+      }
 
       // 同步 Tooltip 與 Crosshair position
       panes.current.forEach((target, idx) => {
-        // Tooltip
-        const timeStr = formatTime(param.time)
-        // 這裡需要用 coordinate 反推 logical index 來找數據
-        const logical = sourceChart.timeScale().coordinateToLogical(param.point!.x)
-        if (logical !== null) {
-          updatePaneTooltip(target, timeStr, Math.round(logical))
-        }
+        // 🔥 加 try-catch，如果圖表已銷毀就略過
+        try {
+            // Tooltip
+            const timeStr = formatTime(param.time)
+            // 這裡需要用 coordinate 反推 logical index 來找數據
+            const logical = sourceChart.timeScale().coordinateToLogical(param.point!.x)
+            if (logical !== null) {
+            updatePaneTooltip(target, timeStr, Math.round(logical))
+            }
 
-        // Sync chart crosshair (如果不是來源圖表)
-        if (idx !== sourcePaneIndex) {
-          target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
-        }
+            // Sync chart crosshair (如果不是來源圖表)
+            if (idx !== sourcePaneIndex) {
+               if(target.chart) {
+                  target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
+               }
+            }
+        } catch(e) {}
       })
     }
 
@@ -475,7 +489,12 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           isSyncing = true
           validCharts
             .filter((c) => c !== chart)
-            .forEach((c) => c.timeScale().setVisibleLogicalRange(range))
+            .forEach((c) => {
+                // 🔥 加 try-catch
+                try {
+                   c.timeScale().setVisibleLogicalRange(range)
+                } catch(e) {}
+            })
           isSyncing = false
           // 更新遮罩
           requestAnimationFrame(updateGlobalMask)
@@ -492,7 +511,12 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
     // Resize Observer
     const ro = new ResizeObserver(() => {
-      panes.current.forEach((p) => p.chart.resize(p.container.clientWidth, 300))
+      panes.current.forEach((p) => {
+        // 🔥 加 try-catch
+        try {
+            p.chart.resize(p.container.clientWidth, 300)
+        } catch(e) {}
+      })
       updateGlobalMask()
     })
     if (chartsContainerRef.current) ro.observe(chartsContainerRef.current)
@@ -521,32 +545,35 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => {
   let html = `<div style="font-weight:bold;margin-bottom:4px;">${timeStr}</div>`
   pane.series.forEach((s) => {
-    const data = s.api.dataByIndex(logical) as any
-    if (!data) return
+    // 🔥 加 try-catch 防止 dataByIndex 錯誤
+    try {
+        const data = s.api.dataByIndex(logical) as any
+        if (!data) return
 
-    let valStr = "--"
-    let color = "#fff"
-    const opts = s.options as any
+        let valStr = "--"
+        let color = "#fff"
+        const opts = s.options as any
 
-    if (data.close !== undefined) {
-      // Candlestick
-      const isUp = data.close >= data.open
-      color = isUp ? opts.upColor : opts.downColor
-      valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(
-        data.low
-      )} C:${toFixedMaybe(data.close)}`
-    } else if (data.value !== undefined) {
-      // Line / Histogram
-      valStr = toFixedMaybe(data.value)
-      if (data.color) color = data.color
-      else if (opts.color) color = opts.color
-      else if (opts.lineColor) color = opts.lineColor
-    }
+        if (data.close !== undefined) {
+        // Candlestick
+        const isUp = data.close >= data.open
+        color = isUp ? opts.upColor : opts.downColor
+        valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(
+            data.low
+        )} C:${toFixedMaybe(data.close)}`
+        } else if (data.value !== undefined) {
+        // Line / Histogram
+        valStr = toFixedMaybe(data.value)
+        if (data.color) color = data.color
+        else if (opts.color) color = opts.color
+        else if (opts.lineColor) color = opts.lineColor
+        }
 
-    html += `<div style="display:flex;justify-content:space-between;gap:10px;color:${color}">
-            <span>${s.title}</span>
-            <span style="font-family:monospace">${valStr}</span>
-        </div>`
+        html += `<div style="display:flex;justify-content:space-between;gap:10px;color:${color}">
+                <span>${s.title}</span>
+                <span style="font-family:monospace">${valStr}</span>
+            </div>`
+    } catch(e) {}
   })
   pane.tooltip.innerHTML = html
   pane.tooltip.style.display = "block"
