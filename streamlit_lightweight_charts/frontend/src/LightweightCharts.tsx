@@ -403,7 +403,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
             primaryTimesRef.current = s.data
               .map((d: any) => normalizeDate(d.time))
-              .filter((t): t is number => t !== null)
+              .filter((t: any): t is number => t !== null)
           }
 
           panes.current[i].series.push({
