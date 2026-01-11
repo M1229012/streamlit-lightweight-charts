@@ -133,7 +133,7 @@ function ensureGlobalMask(host: HTMLDivElement) {
 }
 
 // ====================================================================
-// 3. 畫線工具型別定義 (新增)
+// 3. 畫線工具型別定義
 // ====================================================================
 
 type Point = {
@@ -166,7 +166,7 @@ type PaneMeta = {
 
 const LightweightChartsMultiplePanes: React.VFC = () => {
   const renderData = useRenderData()
-  const chartsData = renderData.args["charts"] || []
+  const chartsData = renderData.args?.["charts"] || []
 
   const chartsContainerRef = useRef<HTMLDivElement>(null)
   const panes = useRef<PaneMeta[]>([])
@@ -177,12 +177,11 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   // 儲存主圖的時間序列
   const primaryTimesRef = useRef<number[]>([])
 
-  // --- 畫線功能 State (新增) ---
+  // --- 畫線功能 State ---
   const [isDrawingMode, setIsDrawingMode] = useState(false)
   const [drawings, setDrawings] = useState<DrawingLine[]>([])
   const [tempStartPoint, setTempStartPoint] = useState<Point | null>(null)
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null)
-  // 用來強制刷新 SVG (當圖表捲動時)
   const [renderTick, setRenderTick] = useState(0)
 
   const chartElRefs = useMemo(() => {
@@ -391,7 +390,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
             primaryTimesRef.current = s.data
               .map((d: any) => normalizeDate(d.time))
-              // ✅ 修復 TS7006 錯誤：明確指定 t 為 any
+              // TS Safe Check
               .filter((t: any): t is number => t !== null)
           }
 
@@ -405,7 +404,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
       chart.timeScale().fitContent()
 
-      // ✅ 新增：訂閱可見範圍變更，強制 React 重新渲染 SVG 線條
+      // 訂閱可見範圍變更，強制 React 重新渲染 SVG 線條
       chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
         setRenderTick((t) => t + 1)
         requestAnimationFrame(updateGlobalMask)
@@ -415,7 +414,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     // =========================================================
     // 事件同步邏輯
     // =========================================================
-
     const syncCrosshair = (sourceChart: IChartApi, param: MouseEventParams, sourcePaneIndex: number) => {
       const vline = globalVLineRef.current
       const host = chartsContainerRef.current
@@ -473,7 +471,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     const ro = new ResizeObserver(() => {
       panes.current.forEach((p) => p.chart.resize(p.container.clientWidth, 300))
       updateGlobalMask()
-      // Resize 也需要重繪 SVG
       setRenderTick((t) => t + 1)
     })
     if (chartsContainerRef.current) ro.observe(chartsContainerRef.current)
@@ -489,36 +486,32 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   }, [highlightRangeSig])
 
   // =========================================================
-  // 畫線邏輯處理 (新增)
+  // 畫線邏輯處理
   // =========================================================
 
-  // 1. 將螢幕座標轉為 Chart 邏輯座標
   const getChartPoint = (e: React.MouseEvent<HTMLDivElement>): Point | null => {
     if (panes.current.length === 0) return null
-    
-    // 我們假設畫線主要在第一張圖 (主圖)
     const pane = panes.current[0] 
-    const rect = pane.container.getBoundingClientRect()
+    // 這裡改用 overlay 的 rect，效果相同
+    const rect = e.currentTarget.getBoundingClientRect()
     
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
 
     const timeScale = pane.chart.timeScale()
-    const series = pane.series[0]?.api // 取得主序列來計算價格
+    const series = pane.series[0]?.api
 
     if (!series) return null
 
     const time = timeScale.coordinateToTime(x)
     const price = series.coordinateToPrice(y)
 
-    // normalize time
     const normalizedTime = normalizeDate(time)
 
     if (normalizedTime === null || price === null) return null
     return { time: normalizedTime, price }
   }
 
-  // 2. 點擊處理
   const handlePaneClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!isDrawingMode) return
 
@@ -526,10 +519,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     if (!point) return
 
     if (!tempStartPoint) {
-      // 第一點
       setTempStartPoint(point)
     } else {
-      // 第二點：完成畫線
       const newLine: DrawingLine = {
         id: Date.now().toString(),
         p1: tempStartPoint,
@@ -537,18 +528,15 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
       setDrawings((prev) => [...prev, newLine])
       setTempStartPoint(null)
-      // 可以選擇畫完一條就退出模式，或者繼續畫，這裡選擇繼續畫
     }
   }
 
-  // 3. 滑鼠移動 (為了預覽線)
   const handlePaneMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!isDrawingMode) return
     const rect = e.currentTarget.getBoundingClientRect()
     setMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
   }
 
-  // 4. 計算 SVG 線條座標
   const getLineCoordinates = (p1: Point, p2: Point) => {
     if (panes.current.length === 0) return null
     const pane = panes.current[0]
@@ -566,7 +554,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     return { x1, y1, x2, y2 }
   }
 
-  // 5. 渲染預覽線
   const renderPreviewLine = () => {
     if (!tempStartPoint || !mousePos || panes.current.length === 0) return null
     
@@ -577,8 +564,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
     const x1 = timeScale.timeToCoordinate(tempStartPoint.time as any)
     const y1 = series.priceToCoordinate(tempStartPoint.price)
-    
-    // 第二點直接用滑鼠位置，比較流暢
     const x2 = mousePos.x
     const y2 = mousePos.y
 
@@ -604,7 +589,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         <button
           onClick={() => {
             setIsDrawingMode(!isDrawingMode)
-            setTempStartPoint(null) // 切換模式時重置
+            setTempStartPoint(null)
           }}
           style={{
             padding: "5px 10px",
@@ -636,48 +621,58 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
       <div ref={chartsContainerRef} style={{ position: "relative" }}>
         {chartElRefs.map((ref, i) => (
-          <div 
-            ref={ref} 
-            key={i} 
-            className="chart-pane" 
-            style={{ position: 'relative' }} // 確保相對定位
-            // 只有主圖 (Index 0) 支援畫線互動
-            onClick={i === 0 ? handlePaneClick : undefined}
-            onMouseMove={i === 0 ? handlePaneMouseMove : undefined}
-          >
-            {/* SVG Overlay Layer (只加在主圖) */}
+          // ✅ 修正：使用 Wrapper 來分開 Chart 容器與 SVG 畫布
+          <div key={i} style={{ position: "relative" }}>
+            
+            {/* 1. Chart 容器 (React 永遠保持這裡為空，不讓 React 動它) */}
+            <div 
+              ref={ref} 
+              className="chart-pane" 
+              // 注意：這邊不要放 children，也不要放 onClick，把主控權完全給圖表庫
+            />
+
+            {/* 2. SVG 畫布層 (獨立於 Chart 容器之外) */}
             {i === 0 && (
-              <svg
+              <div
                 style={{
                   position: "absolute",
                   top: 0,
                   left: 0,
                   width: "100%",
                   height: "100%",
-                  zIndex: 1001, // 比 Tooltip 高或低可自行調整，這裡設高一點確保可互動
-                  pointerEvents: isDrawingMode ? "auto" : "none", // 繪圖模式下才接收滑鼠事件
-                  overflow: "hidden"
+                  zIndex: 1001, // 蓋在圖表上面
+                  // 只有在畫線模式時，才讓滑鼠事件通過 (pointer-events: auto)
+                  // 平常設為 none，讓滑鼠可以直接操作底下的圖表 (縮放、查價)
+                  pointerEvents: isDrawingMode ? "auto" : "none",
                 }}
+                onClick={handlePaneClick}
+                onMouseMove={handlePaneMouseMove}
               >
-                {/* 已完成的線 */}
-                {drawings.map((d) => {
-                  const coords = getLineCoordinates(d.p1, d.p2)
-                  if (!coords) return null
-                  return (
-                    <line
-                      key={d.id}
-                      x1={coords.x1}
-                      y1={coords.y1}
-                      x2={coords.x2}
-                      y2={coords.y2}
-                      stroke="#2962FF"
-                      strokeWidth="2"
-                    />
-                  )
-                })}
-                {/* 預覽線 */}
-                {isDrawingMode && renderPreviewLine()}
-              </svg>
+                <svg
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    overflow: "hidden"
+                  }}
+                >
+                  {drawings.map((d) => {
+                    const coords = getLineCoordinates(d.p1, d.p2)
+                    if (!coords) return null
+                    return (
+                      <line
+                        key={d.id}
+                        x1={coords.x1}
+                        y1={coords.y1}
+                        x2={coords.x2}
+                        y2={coords.y2}
+                        stroke="#2962FF"
+                        strokeWidth="2"
+                      />
+                    )
+                  })}
+                  {isDrawingMode && renderPreviewLine()}
+                </svg>
+              </div>
             )}
           </div>
         ))}
@@ -686,7 +681,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   )
 }
 
-// Helper for tooltip content generation (Keep logic same as before)
+// ====================================================================
+// 5. Helper for tooltip content generation (這是之前漏掉的部分)
+// ====================================================================
 const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => {
   let html = `<div style="font-weight:bold;margin-bottom:4px;">${timeStr}</div>`
   pane.series.forEach((s) => {
