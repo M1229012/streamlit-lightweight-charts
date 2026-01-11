@@ -260,11 +260,8 @@ function ensureDrawToolbar(
       height: "22px",
       fontSize: "12px",
       borderRadius: "6px",
-
-      // ✅ 修正：下拉選單展開時避免白底白字
       background: "#ffffff",
       color: "#000000",
-
       border: "1px solid rgba(255,255,255,0.18)",
       padding: "0 6px",
       cursor: "pointer",
@@ -274,13 +271,10 @@ function ensureDrawToolbar(
       const opt = document.createElement("option")
       opt.value = String(n)
       opt.textContent = String(n)
-
-      // ✅ 修正：option 文字/背景改成黑字白底（不同瀏覽器支援度不同，但至少不會再繼承白字）
       Object.assign(opt.style, {
         backgroundColor: "#ffffff",
         color: "#000000",
       })
-
       widthSel.appendChild(opt)
     })
     widthSel.value = String(getWidth())
@@ -289,7 +283,7 @@ function ensureDrawToolbar(
       if (Number.isFinite(v)) setWidth(v)
     })
 
-    // ✅ 全部改成中文（只改顯示文字，不動 data-mode / 邏輯）
+    // ✅ 中文
     toolbar.appendChild(mkBtn("滑鼠", "mouse"))
     toolbar.appendChild(mkBtn("直線", "line"))
     toolbar.appendChild(mkBtn("延長線", "ray"))
@@ -328,7 +322,7 @@ function ensureDrawingLayer(container: HTMLDivElement) {
       width: "100%",
       height: "100%",
       pointerEvents: "none",
-      zIndex: "850", // 在遮罩之上(800)、VLine/Tooltip 之下(900/1000)
+      zIndex: "850",
     })
     const style = getComputedStyle(container)
     if (style.position === "static") container.style.position = "relative"
@@ -372,6 +366,15 @@ type PendingPoint = {
   p: number
 }
 
+type DragState = {
+  idx: number
+  orig: Drawing
+  startLogical: number
+  startPrice: number
+  origIdx1: number
+  origIdx2: number
+}
+
 const LightweightChartsMultiplePanes: React.VFC = () => {
   const renderData = useRenderData()
   const chartsData = renderData.args["charts"] || []
@@ -384,9 +387,14 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
   // 儲存主圖的時間序列 (用於計算遮罩位置)
   const primaryTimesRef = useRef<number[]>([])
+  // 儲存主圖原始 time（用於拖曳後回填成同一種 time 型別）
+  const primaryTimesRawRef = useRef<any[]>([])
+  // 快速查 index：key = round(normalized_ts)
+  const primaryIndexMapRef = useRef<Map<number, number>>(new Map())
 
   // 主圖 candlestick series (用於 price <-> coordinate)
-  const primarySeriesRef = useRef<ISeriesApi<any> | null>(null)
+  // ✅✅✅ 修正點：改成 any，避免 TS 推論成 never
+  const primarySeriesRef = useRef<any>(null)
 
   // 畫線工具狀態
   const drawModeRef = useRef<DrawMode>("mouse")
@@ -398,6 +406,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   const drawingsRef = useRef<Drawing[]>([])
   const pendingPointRef = useRef<PendingPoint | null>(null)
   const previewRef = useRef<Drawing | null>(null)
+
+  // 拖曳狀態（只在滑鼠模式生效）
+  const dragRef = useRef<DragState | null>(null)
 
   const chartElRefs = useMemo(() => {
     return Array(chartsData.length)
@@ -411,6 +422,20 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     if (!hr) return ""
     return `${hr.start}|${hr.end}`
   }, [renderData.args])
+
+  const timeToIndex = (t: any) => {
+    const n = normalizeDate(t)
+    if (n == null) return -1
+    const key = Math.round(n)
+    const idx = primaryIndexMapRef.current.get(key)
+    return typeof idx === "number" ? idx : -1
+  }
+
+  const clampIndex = (i: number) => {
+    const n = primaryTimesRawRef.current.length
+    if (n <= 0) return 0
+    return Math.max(0, Math.min(n - 1, i))
+  }
 
   const renderDrawings = () => {
     const p0 = panes.current[0]
@@ -550,7 +575,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     }
 
     // 3. 在 times 陣列中尋找對應的 Index
-    // startIdx: 第一個 >= tStart 的位置
     let startIdx = -1
     for (let i = 0; i < times.length; i++) {
       if (times[i] >= tStart) {
@@ -559,7 +583,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
     }
 
-    // endIdx: 最後一個 <= tEnd 的位置
     let endIdx = -1
     for (let i = times.length - 1; i >= 0; i--) {
       if (times[i] <= tEnd) {
@@ -568,14 +591,11 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
     }
 
-    // 如果找不到或範圍無效
     if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) {
       mask.style.display = "none"
       return
     }
 
-    // 4. 計算像素位置
-    // 🔥 防呆：確保圖表存在
     const p0 = panes.current[0]
     if (!p0 || !p0.chart) return
 
@@ -673,6 +693,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     chartInstances.current = []
     panes.current = []
     primaryTimesRef.current = []
+    primaryTimesRawRef.current = []
+    primaryIndexMapRef.current = new Map()
     primarySeriesRef.current = null
 
     const host = chartsContainerRef.current
@@ -693,7 +715,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         () => drawColorRef.current,
         (c) => {
           drawColorRef.current = c
-          // 只要調色就重畫（含預覽）
           renderDrawings()
         },
         () => drawWidthRef.current,
@@ -708,10 +729,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         if (globalVLineRef.current) globalVLineRef.current.style.display = "none"
       }
       host.addEventListener("mouseleave", mouseLeaveHandler)
-      // 記住 cleanup
       return () => host.removeEventListener("mouseleave", mouseLeaveHandler)
     }
-  }, [chartsData.length]) // 僅在圖表數量改變時重置 DOM 結構
+  }, [chartsData.length])
 
   // =========================================================
   // 建立/更新 Series 與 Data
@@ -723,16 +743,22 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     chartInstances.current = []
     panes.current = []
     primaryTimesRef.current = []
+    primaryTimesRawRef.current = []
+    primaryIndexMapRef.current = new Map()
     primarySeriesRef.current = null
 
     const clickSubscriptions: Array<{ chart: IChartApi; handler: (p: MouseEventParams) => void }> = []
     const crosshairSubscriptions: Array<{ chart: IChartApi; handler: (p: MouseEventParams) => void }> = []
 
+    // 拖曳事件（DOM）
+    let domMouseDown: ((e: MouseEvent) => void) | null = null
+    let domMouseMove: ((e: MouseEvent) => void) | null = null
+    let domMouseUp: ((e: MouseEvent) => void) | null = null
+
     chartElRefs.forEach((ref, i) => {
       const container = ref.current
       if (!container) return
 
-      // Create Chart (縮短頁面：主圖較高、指標較矮)
       const chart = createChart(container, {
         height: i === 0 ? 360 : 160,
         width: container.clientWidth || 600,
@@ -755,12 +781,11 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         },
       })
 
-      // Crosshair config
       chart.applyOptions({
         crosshair: {
-          mode: 1, // Magnet
+          mode: 1,
           vertLine: {
-            visible: false, // 我們用 global vline
+            visible: false,
             labelBackgroundColor: "#4c525e",
           },
           horzLine: {
@@ -774,7 +799,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const tooltip = ensurePaneTooltip(container)
       panes.current[i] = { chart, container, tooltip, series: [] }
 
-      // Add Series
       for (const s of chartsData[i].series) {
         let api: ISeriesApi<any> | null = null
         switch (s.type) {
@@ -805,9 +829,24 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (s.markers) api.setMarkers(s.markers)
 
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
-            primaryTimesRef.current = s.data
-              .map((d: any) => normalizeDate(d.time))
-              .filter((t: any): t is number => t !== null)
+            const rawArr: any[] = []
+            const normArr: number[] = []
+            const idxMap = new Map<number, number>()
+
+            s.data.forEach((d: any) => {
+              const n = normalizeDate(d.time)
+              if (n !== null) {
+                const key = Math.round(n)
+                const idx = normArr.length
+                rawArr.push(d.time)
+                normArr.push(n)
+                idxMap.set(key, idx)
+              }
+            })
+
+            primaryTimesRawRef.current = rawArr
+            primaryTimesRef.current = normArr
+            primaryIndexMapRef.current = idxMap
 
             primarySeriesRef.current = api
           }
@@ -827,7 +866,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     // 事件同步邏輯
     // =========================================================
 
-    // Crosshair Sync
     const syncCrosshair = (sourceChart: IChartApi, param: MouseEventParams, sourcePaneIndex: number) => {
       const vline = globalVLineRef.current
       const host = chartsContainerRef.current
@@ -877,7 +915,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       p.chart.subscribeCrosshairMove((param) => syncCrosshair(p.chart, param, idx))
     })
 
-    // Time Scale Sync (Visible Range)
     const validCharts = chartInstances.current.filter((c): c is IChartApi => c !== null)
     if (validCharts.length > 1) {
       let isSyncing = false
@@ -930,7 +967,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const pp = pendingPointRef.current
           const modeNow = pp.mode
 
-          // hline：預覽只要固定 y（p1）
+          // hline：因為改成「點一下就實體」，這裡通常不會進來
           if (modeNow === "hline") {
             previewRef.current = {
               mode: "hline",
@@ -945,7 +982,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             return
           }
 
-          // line / ray：需要抓當下 price
           let price: number | null = null
           try {
             price = series.coordinateToPrice((param.point as any).y) as any
@@ -972,6 +1008,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     } catch (e) {}
 
     // ✅ 點兩下才成形：第一下建立 pending + 預覽，第二下 commit
+    // ✅ 但：水平線改成「點一下就直接實體」
     try {
       const c0 = chartInstances.current[0]
       if (c0) {
@@ -982,7 +1019,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const series = primarySeriesRef.current
           if (!series) return
 
-          // 取得 price（主圖）
           let price: number | null = null
           try {
             price = series.coordinateToPrice((param.point as any).y) as any
@@ -994,31 +1030,38 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const t = param.time
           const mode = drawModeRef.current
 
+          // ✅ 水平線：點一下直接實體
+          if (mode === "hline") {
+            pendingPointRef.current = null
+            previewRef.current = null
+
+            const newDrawing: Drawing = {
+              mode: "hline",
+              t1: t,
+              p1: price,
+              t2: t,
+              p2: price,
+              color: drawColorRef.current,
+              width: drawWidthRef.current,
+            }
+
+            drawingsRef.current.push(newDrawing)
+            renderDrawings()
+            return
+          }
+
           // 第一次點
           if (!pendingPointRef.current) {
             pendingPointRef.current = { mode, t, p: price }
 
-            // 立刻給一個預覽（hline 直接固定；line/ray 先用同一點）
-            if (mode === "hline") {
-              previewRef.current = {
-                mode: "hline",
-                t1: t,
-                p1: price,
-                t2: t,
-                p2: price,
-                color: drawColorRef.current,
-                width: drawWidthRef.current,
-              }
-            } else {
-              previewRef.current = {
-                mode: mode === "ray" ? "ray" : "line",
-                t1: t,
-                p1: price,
-                t2: t,
-                p2: price,
-                color: drawColorRef.current,
-                width: drawWidthRef.current,
-              }
+            previewRef.current = {
+              mode: mode === "ray" ? "ray" : "line",
+              t1: t,
+              p1: price,
+              t2: t,
+              p2: price,
+              color: drawColorRef.current,
+              width: drawWidthRef.current,
             }
 
             renderDrawings()
@@ -1029,8 +1072,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const p1 = pendingPointRef.current
           pendingPointRef.current = null
 
-          const dMode: DrawingMode =
-            p1.mode === "ray" ? "ray" : p1.mode === "hline" ? "hline" : "line"
+          const dMode: DrawingMode = p1.mode === "ray" ? "ray" : "line"
 
           const newDrawing: Drawing = {
             mode: dMode,
@@ -1042,21 +1084,226 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             width: drawWidthRef.current,
           }
 
-          // hline：第二次點其實不影響結果（仍用 p1）
-          if (dMode === "hline") {
-            newDrawing.t2 = p1.t
-            newDrawing.p2 = p1.p
-          }
-
           drawingsRef.current.push(newDrawing)
 
-          // 清掉預覽
           previewRef.current = null
           renderDrawings()
         }
 
         c0.subscribeClick(handler)
         clickSubscriptions.push({ chart: c0, handler })
+      }
+    } catch (e) {}
+
+    // =========================================================
+    // ✅ 實體線可拖曳移動（只在「滑鼠模式」）
+    // =========================================================
+    try {
+      const p0 = panes.current[0]
+      const chart0 = chartInstances.current[0]
+      const series = primarySeriesRef.current
+      if (p0 && p0.container && chart0 && series) {
+        const container = p0.container
+
+        const distPointToSegment = (px: number, py: number, x1: number, y1: number, x2: number, y2: number) => {
+          const vx = x2 - x1
+          const vy = y2 - y1
+          const wx = px - x1
+          const wy = py - y1
+          const c1 = vx * wx + vy * wy
+          if (c1 <= 0) return Math.hypot(px - x1, py - y1)
+          const c2 = vx * vx + vy * vy
+          if (c2 <= c1) return Math.hypot(px - x2, py - y2)
+          const b = c1 / c2
+          const bx = x1 + b * vx
+          const by = y1 + b * vy
+          return Math.hypot(px - bx, py - by)
+        }
+
+        const findHit = (mx: number, my: number) => {
+          const ts = chart0.timeScale()
+          const w = container.clientWidth || 1
+          const h = container.clientHeight || 1
+
+          let bestIdx = -1
+          let bestDist = Infinity
+
+          for (let i = 0; i < drawingsRef.current.length; i++) {
+            const d = drawingsRef.current[i]
+            if (d.mode === "hline") {
+              const yc = series.priceToCoordinate(d.p1)
+              if (yc == null) continue
+              const y = yc as unknown as number
+              const dd = Math.abs(my - y)
+              if (dd < bestDist) {
+                bestDist = dd
+                bestIdx = i
+              }
+              continue
+            }
+
+            const x1c = ts.timeToCoordinate(d.t1)
+            const x2c = ts.timeToCoordinate(d.t2)
+            const y1c = series.priceToCoordinate(d.p1)
+            const y2c = series.priceToCoordinate(d.p2)
+            if (x1c == null || x2c == null || y1c == null || y2c == null) continue
+
+            const x1 = x1c as unknown as number
+            const x2 = x2c as unknown as number
+            const y1 = y1c as unknown as number
+            const y2 = y2c as unknown as number
+            if (!Number.isFinite(x1) || !Number.isFinite(x2) || !Number.isFinite(y1) || !Number.isFinite(y2)) continue
+
+            if (d.mode === "line") {
+              const dd = distPointToSegment(mx, my, x1, y1, x2, y2)
+              if (dd < bestDist) {
+                bestDist = dd
+                bestIdx = i
+              }
+              continue
+            }
+
+            if (d.mode === "ray") {
+              const xr = w
+              let yr = y2
+              const dx = x2 - x1
+              const dy = y2 - y1
+              if (Math.abs(dx) < 1e-6) {
+                const dd = Math.abs(mx - x1)
+                if (dd < bestDist) {
+                  bestDist = dd
+                  bestIdx = i
+                }
+              } else {
+                const slope = dy / dx
+                yr = y1 + slope * (xr - x1)
+                const dd = distPointToSegment(mx, my, x1, y1, xr, yr)
+                if (dd < bestDist) {
+                  bestDist = dd
+                  bestIdx = i
+                }
+              }
+              continue
+            }
+          }
+
+          return { idx: bestIdx, dist: bestDist }
+        }
+
+        domMouseDown = (e: MouseEvent) => {
+          if (drawModeRef.current !== "mouse") return
+          if (!series || !chart0) return
+          if (drawingsRef.current.length === 0) return
+
+          const rect = container.getBoundingClientRect()
+          const mx = e.clientX - rect.left
+          const my = e.clientY - rect.top
+
+          const hit = findHit(mx, my)
+          const threshold = 7
+          if (hit.idx < 0 || hit.dist > threshold) return
+
+          try {
+            e.preventDefault()
+            e.stopPropagation()
+            ;(e as any).stopImmediatePropagation?.()
+          } catch (err) {}
+
+          const ts = chart0.timeScale()
+          const logical = ts.coordinateToLogical(mx as any)
+          const price = series.coordinateToPrice(my as any) as any
+          if (logical == null || price == null || !Number.isFinite(price)) return
+
+          const d = drawingsRef.current[hit.idx]
+          const orig: Drawing = { ...d }
+
+          const idx1 = d.mode === "hline" ? -1 : timeToIndex(d.t1)
+          const idx2 = d.mode === "hline" ? -1 : timeToIndex(d.t2)
+
+          dragRef.current = {
+            idx: hit.idx,
+            orig,
+            startLogical: Number(logical),
+            startPrice: Number(price),
+            origIdx1: idx1,
+            origIdx2: idx2,
+          }
+
+          container.style.cursor = "grabbing"
+        }
+
+        domMouseMove = (e: MouseEvent) => {
+          if (drawModeRef.current !== "mouse") return
+          if (!series || !chart0) return
+
+          const rect = container.getBoundingClientRect()
+          const mx = e.clientX - rect.left
+          const my = e.clientY - rect.top
+
+          if (!dragRef.current) {
+            const hit = findHit(mx, my)
+            const threshold = 7
+            container.style.cursor = hit.idx >= 0 && hit.dist <= threshold ? "grab" : ""
+            return
+          }
+
+          try {
+            e.preventDefault()
+            e.stopPropagation()
+            ;(e as any).stopImmediatePropagation?.()
+          } catch (err) {}
+
+          const ts = chart0.timeScale()
+          const logicalNow = ts.coordinateToLogical(mx as any)
+          const priceNow = series.coordinateToPrice(my as any) as any
+          if (logicalNow == null || priceNow == null || !Number.isFinite(priceNow)) return
+
+          const st = dragRef.current
+          const deltaBars = Math.round(Number(logicalNow) - st.startLogical)
+          const deltaPrice = Number(priceNow) - st.startPrice
+
+          const orig = st.orig
+          const updated: Drawing = { ...drawingsRef.current[st.idx] }
+
+          if (orig.mode === "hline") {
+            updated.p1 = orig.p1 + deltaPrice
+            updated.p2 = updated.p1
+            drawingsRef.current[st.idx] = updated
+            renderDrawings()
+            return
+          }
+
+          const rawTimes = primaryTimesRawRef.current
+          if (!rawTimes || rawTimes.length === 0) return
+          if (st.origIdx1 < 0 || st.origIdx2 < 0) return
+
+          const ni1 = clampIndex(st.origIdx1 + deltaBars)
+          const ni2 = clampIndex(st.origIdx2 + deltaBars)
+
+          updated.t1 = rawTimes[ni1]
+          updated.t2 = rawTimes[ni2]
+          updated.p1 = orig.p1 + deltaPrice
+          updated.p2 = orig.p2 + deltaPrice
+
+          drawingsRef.current[st.idx] = updated
+          renderDrawings()
+        }
+
+        domMouseUp = (e: MouseEvent) => {
+          if (!dragRef.current) return
+          try {
+            e.preventDefault()
+            e.stopPropagation()
+            ;(e as any).stopImmediatePropagation?.()
+          } catch (err) {}
+
+          dragRef.current = null
+          container.style.cursor = ""
+        }
+
+        container.addEventListener("mousedown", domMouseDown, true)
+        window.addEventListener("mousemove", domMouseMove, true)
+        window.addEventListener("mouseup", domMouseUp, true)
       }
     } catch (e) {}
 
@@ -1094,6 +1341,16 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         } catch (e) {}
       })
 
+      // ✅ 拖曳事件移除
+      try {
+        const p0 = panes.current[0]
+        if (p0 && p0.container && domMouseDown) {
+          p0.container.removeEventListener("mousedown", domMouseDown, true)
+        }
+        if (domMouseMove) window.removeEventListener("mousemove", domMouseMove, true)
+        if (domMouseUp) window.removeEventListener("mouseup", domMouseUp, true)
+      } catch (e) {}
+
       panes.current = []
 
       const oldCharts = [...chartInstances.current]
@@ -1107,9 +1364,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         }
       })
     }
-  }, [chartsData]) // 當 chartsData 變更時 (包含 highlightRange) 重繪
+  }, [chartsData])
 
-  // 額外 Effect: 當 highlightRange 改變時，強制更新 Mask (不做整圖重繪)
+  // 額外 Effect: 當 highlightRange 改變時，強制更新 Mask
   useEffect(() => {
     updateGlobalMask()
   }, [highlightRangeSig])
