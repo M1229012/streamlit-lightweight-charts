@@ -260,9 +260,12 @@ function ensureDrawToolbar(
       height: "22px",
       fontSize: "12px",
       borderRadius: "6px",
-      background: "rgba(255,255,255,0.08)",
+
+      // ✅ 修正：下拉選單展開時避免白底白字
+      background: "#ffffff",
+      color: "#000000",
+
       border: "1px solid rgba(255,255,255,0.18)",
-      color: "rgba(255,255,255,0.9)",
       padding: "0 6px",
       cursor: "pointer",
       outline: "none",
@@ -271,6 +274,13 @@ function ensureDrawToolbar(
       const opt = document.createElement("option")
       opt.value = String(n)
       opt.textContent = String(n)
+
+      // ✅ 修正：option 文字/背景改成黑字白底（不同瀏覽器支援度不同，但至少不會再繼承白字）
+      Object.assign(opt.style, {
+        backgroundColor: "#ffffff",
+        color: "#000000",
+      })
+
       widthSel.appendChild(opt)
     })
     widthSel.value = String(getWidth())
@@ -279,15 +289,16 @@ function ensureDrawToolbar(
       if (Number.isFinite(v)) setWidth(v)
     })
 
-    toolbar.appendChild(mkBtn("Mouse", "mouse"))
-    toolbar.appendChild(mkBtn("Line", "line"))
-    toolbar.appendChild(mkBtn("Ray", "ray"))
-    toolbar.appendChild(mkBtn("HLine", "hline"))
+    // ✅ 全部改成中文（只改顯示文字，不動 data-mode / 邏輯）
+    toolbar.appendChild(mkBtn("滑鼠", "mouse"))
+    toolbar.appendChild(mkBtn("直線", "line"))
+    toolbar.appendChild(mkBtn("延長線", "ray"))
+    toolbar.appendChild(mkBtn("水平線", "hline"))
 
     toolbar.appendChild(divider())
-    toolbar.appendChild(mkLabel("Color"))
+    toolbar.appendChild(mkLabel("顏色"))
     toolbar.appendChild(colorInput)
-    toolbar.appendChild(mkLabel("W"))
+    toolbar.appendChild(mkLabel("粗細"))
     toolbar.appendChild(widthSel)
 
     const style = getComputedStyle(host)
