@@ -403,6 +403,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
             primaryTimesRef.current = s.data
               .map((d: any) => normalizeDate(d.time))
+              // 🔥 修正處：明確定義參數 t 為 any，以解決 TS7006 錯誤
               .filter((t: any): t is number => t !== null)
           }
 
