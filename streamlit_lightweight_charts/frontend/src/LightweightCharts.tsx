@@ -243,7 +243,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     // 4. 計算像素位置
     const p0 = panes.current[0]
     
-    // 🔥 防呆：確認圖表是否存在，避免 Object is disposed
+    // 🔥 防呆：確認圖表是否存在
     if (!p0 || !p0.chart) return 
 
     // 🔥 加上 try-catch 防止取 timeScale 時剛好被銷毀
@@ -449,7 +449,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         const sourcePane = panes.current[sourcePaneIndex]
         
         // 如果圖表已銷毀，不做事
-        if (!sourcePane.chart) return
+        if (!sourcePane || !sourcePane.chart) return
 
         const rawX = sourcePane.chart.timeScale().timeToCoordinate(param.time)
         if (rawX === null) return
@@ -469,7 +469,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         // 🔥 加 try-catch，如果圖表已銷毀就略過
         try {
             // 如果目標圖表已銷毀，跳過
-            if (!target.chart) return
+            if (!target || !target.chart) return
 
             // Tooltip
             const timeStr = formatTime(param.time)
@@ -482,7 +482,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             // Sync chart crosshair (如果不是來源圖表)
             if (idx !== sourcePaneIndex) {
                // 這是最容易報錯的地方，確保 target.chart 存在再呼叫
-               target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
+               // 🔥 Double-Check inside Try-Catch
+               if (target.chart) {
+                   target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
+               }
             }
         } catch(e) {
             // 忽略 Object is disposed 錯誤
@@ -538,9 +541,25 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     })
     if (chartsContainerRef.current) ro.observe(chartsContainerRef.current)
 
+    // =========================================================
+    // 🔥 Cleanup (最關鍵的修正：改變清除順序)
+    // =========================================================
     return () => {
       ro.disconnect()
-      chartInstances.current.forEach((c) => c && c.remove())
+
+      // 1. 先把 panes 陣列清空，這樣還沒執行完的 Event Loop 就會因為找不到 target 而停止
+      // 這能防止 forEach 迴圈在圖表被 dispose 後還繼續執行
+      panes.current = []
+      
+      // 2. 緩存舊的 charts，然後安全地移除
+      const oldCharts = [...chartInstances.current];
+      chartInstances.current = [];
+
+      oldCharts.forEach((c) => {
+          if (c) {
+            try { c.remove() } catch(e) {}
+          }
+      })
     }
   }, [chartsData]) // 當 chartsData 變更時 (包含 highlightRange) 重繪
 
