@@ -241,8 +241,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     }
 
     // 4. 計算像素位置
-    const p0 = panes.current[0]
     // 🔥 防呆：確認圖表是否存在
+    const p0 = panes.current[0]
     if (!p0 || !p0.chart) return 
 
     // 🔥 加上 try-catch 防止取 timeScale 時剛好被銷毀
@@ -529,9 +529,25 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     })
     if (chartsContainerRef.current) ro.observe(chartsContainerRef.current)
 
+    // =========================================================
+    // 🔥 Cleanup (最關鍵的修正：改變清除順序)
+    // =========================================================
     return () => {
       ro.disconnect()
-      chartInstances.current.forEach((c) => c && c.remove())
+
+      // 1. 先把 panes 陣列清空，這樣還沒執行完的 Event Loop 就會因為找不到 target 而停止
+      // 這能防止 forEach 迴圈在圖表被 dispose 後還繼續執行
+      panes.current = []
+      
+      // 2. 緩存舊的 charts，然後安全地移除
+      const oldCharts = [...chartInstances.current];
+      chartInstances.current = []; // 切斷引用，確保任何滯留的邏輯不會存取到
+
+      oldCharts.forEach((c) => {
+          if (c) {
+            try { c.remove() } catch(e) {}
+          }
+      })
     }
   }, [chartsData]) // 當 chartsData 變更時 (包含 highlightRange) 重繪
 
@@ -553,7 +569,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => {
   let html = `<div style="font-weight:bold;margin-bottom:4px;">${timeStr}</div>`
   pane.series.forEach((s) => {
-    // 🔥 加入 try-catch
+    // 🔥 加入 try-catch 防止資料存取錯誤
     try {
         const data = s.api.dataByIndex(logical) as any
         if (!data) return
@@ -581,7 +597,9 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
                 <span>${s.title}</span>
                 <span style="font-family:monospace">${valStr}</span>
             </div>`
-    } catch(e) {}
+    } catch(e) {
+        // ignore
+    }
   })
   pane.tooltip.innerHTML = html
   pane.tooltip.style.display = "block"
