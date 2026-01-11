@@ -124,26 +124,30 @@ function ensureGlobalMask(host: HTMLDivElement) {
   if (!mask) {
     mask = document.createElement("div")
     mask.className = "global-mask"
-    Object.assign(mask.style, {
-      position: "absolute",
-      top: "0px",
-      // ✅ 修正：不要用 bottom:0 讓遮罩吃滿整個 host（會蓋到 RSI/MACD）
-      height: "0px",
-      left: "0px",
-      width: "0px",
-      display: "none",
-      pointerEvents: "none",
-      // ✅ 關鍵：確保遮罩在 Canvas 之上、但在 VLine/Tooltip 之下
-      zIndex: "800",
-      // ✅ 樣式：半透明黃色 (模仿籌碼K線)
-      background: "rgba(255, 235, 59, 0.15)",
-      borderLeft: "1px solid rgba(255, 235, 59, 0.4)",
-      borderRight: "1px solid rgba(255, 235, 59, 0.4)",
-    })
     const style = getComputedStyle(host)
     if (style.position === "static") host.style.position = "relative"
     host.appendChild(mask)
   }
+
+  // ✅ 關鍵修正：不論是否已存在，都強制覆寫關鍵樣式
+  // 避免舊 DOM 殘留 bottom:0 造成遮罩吃滿整個 host，蓋住 MACD/RSI
+  Object.assign(mask.style, {
+    position: "absolute",
+    top: "0px",
+    bottom: "auto", // ✅ 清掉 bottom:0 殘留
+    height: "0px",  // ✅ 高度由 updateGlobalMask 動態設定
+    left: "0px",
+    width: "0px",
+    display: "none",
+    pointerEvents: "none",
+    // ✅ 關鍵：確保遮罩在 Canvas 之上、但在 VLine/Tooltip 之下
+    zIndex: "800",
+    // ✅ 樣式：半透明黃色 (模仿籌碼K線)
+    background: "rgba(255, 235, 59, 0.15)",
+    borderLeft: "1px solid rgba(255, 235, 59, 0.4)",
+    borderRight: "1px solid rgba(255, 235, 59, 0.4)",
+  })
+
   return mask
 }
 
@@ -197,6 +201,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     const host = chartsContainerRef.current
     const mask = globalMaskRef.current
     if (!host || !mask) return
+
+    // ✅ 保險：避免任何情況 bottom 殘留
+    mask.style.bottom = "auto"
 
     const hr = chartsData?.[0]?.highlightRange
     const times = primaryTimesRef.current // 這裡是已經 normalize 過的 timestamps
@@ -269,7 +276,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       // 計算相對於 host 的偏移量
       const offsetX = paneRect.left - hostRect.left
 
-      // ✅ 新增：只讓遮罩覆蓋「主圖 pane」的高度，避免蓋到 MACD/RSI
+      // ✅ 只遮主圖高度：用主圖 pane 的 top/height
       const offsetY = paneRect.top - hostRect.top
       const paneH = paneRect.height
 
