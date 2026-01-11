@@ -1,5 +1,4 @@
 import { useRenderData } from "streamlit-component-lib-react-hooks"
-import { Streamlit } from "streamlit-component-lib"
 import { createChart, IChartApi, MouseEventParams, ISeriesApi } from "lightweight-charts"
 import React, { useRef, useEffect, useMemo } from "react"
 
@@ -177,29 +176,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   // 儲存主圖的時間序列 (用於計算遮罩位置)
   const primaryTimesRef = useRef<number[]>([])
 
-  // ✅ 新增：避免 setFrameHeight 反覆觸發造成抖動
-  const lastFrameHeightRef = useRef<number>(0)
-
-  // ✅ 新增：把 Streamlit iframe 高度撐到足夠大，避免 MACD/RSI 被裁切
-  const updateFrameHeight = () => {
-    const host = chartsContainerRef.current
-    if (!host) return
-
-    // scrollHeight 對「多個 pane 堆疊」最穩
-    const h = Math.ceil(host.scrollHeight || host.getBoundingClientRect().height || 0)
-    if (!Number.isFinite(h) || h <= 0) return
-
-    // 避免頻繁更新（差異小於 2px 就不更新）
-    if (Math.abs(h - lastFrameHeightRef.current) < 2) return
-    lastFrameHeightRef.current = h
-
-    try {
-      Streamlit.setFrameHeight(h)
-    } catch (e) {
-      // ignore
-    }
-  }
-
   const chartElRefs = useMemo(() => {
     return Array(chartsData.length)
       .fill(null)
@@ -267,55 +243,55 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     // 4. 計算像素位置
     // 🔥 防呆：確保圖表存在
     const p0 = panes.current[0]
-    if (!p0 || !p0.chart) return
+    if (!p0 || !p0.chart) return 
 
     try {
-      const timeScale = p0.chart.timeScale()
+        const timeScale = p0.chart.timeScale()
 
-      const x1 = timeScale.logicalToCoordinate(startIdx as any)
-      const x2 = timeScale.logicalToCoordinate(endIdx as any)
+        const x1 = timeScale.logicalToCoordinate(startIdx as any)
+        const x2 = timeScale.logicalToCoordinate(endIdx as any)
 
-      // 重新取得確實的座標 (若是 null 則給極端值讓遮罩至少能顯示/或被判定為無效)
-      const safeX1 = x1 ?? -100000
-      const safeX2 = x2 ?? -100000
+        // 重新取得確實的座標 (若是 null 則給極端值讓遮罩至少能顯示/或被判定為無效)
+        const safeX1 = x1 ?? -100000
+        const safeX2 = x2 ?? -100000
 
-      // ✅ 防呆：避免 NaN/Infinity 造成 NaNpx
-      if (!Number.isFinite(safeX1) || !Number.isFinite(safeX2)) {
+        // ✅ 防呆：避免 NaN/Infinity 造成 NaNpx
+        if (!Number.isFinite(safeX1) || !Number.isFinite(safeX2)) {
+          mask.style.display = "none"
+          return
+        }
+
+        const hostRect = host.getBoundingClientRect()
+        const paneRect = p0.container.getBoundingClientRect()
+
+        // 計算相對於 host 的偏移量
+        const offsetX = paneRect.left - hostRect.left
+
+        // ✅ 修正：遮罩只覆蓋「主圖 pane(第0個)」的垂直範圍，避免蓋住 MACD/RSI
+        const offsetY = paneRect.top - hostRect.top
+        mask.style.top = `${offsetY}px`
+        mask.style.height = `${paneRect.height}px`
+        mask.style.bottom = "auto"
+
+        // ✅ 核心修正：不要再用可能算出 NaN 的 barWidth 估算
+        // 直接用座標 x1/x2 + 固定 padding 算遮罩範圍
+        const padding = 3 // 你要更寬可以調大，例如 6、8
+        const left = Math.min(safeX1, safeX2) - padding
+        const right = Math.max(safeX1, safeX2) + padding
+
+        const styleLeft = offsetX + left
+        const styleWidth = right - left
+
+        if (!Number.isFinite(styleLeft) || !Number.isFinite(styleWidth) || styleWidth <= 0) {
+          mask.style.display = "none"
+          return
+        }
+
+        mask.style.display = "block"
+        mask.style.left = `${styleLeft}px`
+        mask.style.width = `${styleWidth}px`
+    } catch(e) {
         mask.style.display = "none"
-        return
-      }
-
-      const hostRect = host.getBoundingClientRect()
-      const paneRect = p0.container.getBoundingClientRect()
-
-      // 計算相對於 host 的偏移量
-      const offsetX = paneRect.left - hostRect.left
-
-      // ✅ 修正：遮罩只覆蓋「主圖 pane(第0個)」的垂直範圍，避免蓋住 MACD/RSI
-      const offsetY = paneRect.top - hostRect.top
-      mask.style.top = `${offsetY}px`
-      mask.style.height = `${paneRect.height}px`
-      mask.style.bottom = "auto"
-
-      // ✅ 核心修正：不要再用可能算出 NaN 的 barWidth 估算
-      // 直接用座標 x1/x2 + 固定 padding 算遮罩範圍
-      const padding = 3 // 你要更寬可以調大，例如 6、8
-      const left = Math.min(safeX1, safeX2) - padding
-      const right = Math.max(safeX1, safeX2) + padding
-
-      const styleLeft = offsetX + left
-      const styleWidth = right - left
-
-      if (!Number.isFinite(styleLeft) || !Number.isFinite(styleWidth) || styleWidth <= 0) {
-        mask.style.display = "none"
-        return
-      }
-
-      mask.style.display = "block"
-      mask.style.left = `${styleLeft}px`
-      mask.style.width = `${styleWidth}px`
-    } catch (e) {
-      mask.style.display = "none"
     }
   }
 
@@ -342,10 +318,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         if (globalVLineRef.current) globalVLineRef.current.style.display = "none"
       }
       host.addEventListener("mouseleave", mouseLeaveHandler)
-
-      // ✅ 新增：初始化時也更新一次 iframe 高度
-      requestAnimationFrame(updateFrameHeight)
-
       // 記住 cleanup
       return () => host.removeEventListener("mouseleave", mouseLeaveHandler)
     }
@@ -369,9 +341,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       if (!container) return
 
       // Create Chart
-      // 🔥🔥🔥 這裡修改高度：從 300 加大到 400
+      // ✅ 縮短頁面：主圖較高、指標較矮
       const chart = createChart(container, {
-        height: 300,
+        height: i === 0 ? 360 : 160,
         width: container.clientWidth || 600,
         ...chartsData[i].chart,
         layout: {
@@ -479,7 +451,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       // 🔥 加入 try-catch 防止來源圖表被銷毀時出錯
       try {
         const sourcePane = panes.current[sourcePaneIndex]
-        if (!sourcePane || !sourcePane.chart) return
+        if (!sourcePane || !sourcePane.chart) return 
 
         const rawX = sourcePane.chart.timeScale().timeToCoordinate(param.time)
         if (rawX === null) return
@@ -490,33 +462,31 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
         vline.style.left = `${absoluteX}px`
         vline.style.display = "block"
-      } catch (e) {
-        return
-      }
+      } catch (e) { return }
 
       // 同步 Tooltip 與 Crosshair position
       panes.current.forEach((target, idx) => {
         // 🔥 加入 try-catch 防止目標圖表被銷毀時出錯
         try {
-          if (!target || !target.chart) return
+            if (!target || !target.chart) return
 
-          // Tooltip
-          const timeStr = formatTime(param.time)
-          // 這裡需要用 coordinate 反推 logical index 來找數據
-          const logical = sourceChart.timeScale().coordinateToLogical(param.point!.x)
-          if (logical !== null) {
-            updatePaneTooltip(target, timeStr, Math.round(logical))
-          }
-
-          // Sync chart crosshair (如果不是來源圖表)
-          if (idx !== sourcePaneIndex) {
-            // 🔥 Double-Check inside Try-Catch
-            if (target.chart) {
-              target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
+            // Tooltip
+            const timeStr = formatTime(param.time)
+            // 這裡需要用 coordinate 反推 logical index 來找數據
+            const logical = sourceChart.timeScale().coordinateToLogical(param.point!.x)
+            if (logical !== null) {
+              updatePaneTooltip(target, timeStr, Math.round(logical))
             }
-          }
-        } catch (e) {
-          // ignore
+
+            // Sync chart crosshair (如果不是來源圖表)
+            if (idx !== sourcePaneIndex) {
+               // 🔥 Double-Check inside Try-Catch
+               if (target.chart) {
+                 target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
+               }
+            }
+        } catch(e) {
+            // ignore
         }
       })
     }
@@ -536,10 +506,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           validCharts
             .filter((c) => c !== chart)
             .forEach((c) => {
-              // 🔥 加入 try-catch
-              try {
-                c.timeScale().setVisibleLogicalRange(range)
-              } catch (e) {}
+                // 🔥 加入 try-catch
+                try {
+                   c.timeScale().setVisibleLogicalRange(range)
+                } catch(e) {}
             })
           isSyncing = false
           // 更新遮罩
@@ -555,22 +525,16 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     // 初始化遮罩
     setTimeout(updateGlobalMask, 100)
 
-    // ✅ 新增：圖表建立完成後，撐高 Streamlit iframe，避免下方 pane 被裁切
-    setTimeout(updateFrameHeight, 120)
-
     // Resize Observer
     const ro = new ResizeObserver(() => {
-      panes.current.forEach((p) => {
-        // 🔥 加入 try-catch
-        try {
-          // 🔥🔥🔥 這裡修改高度：從 300 加大到 400
-          if (p.chart) p.chart.resize(p.container.clientWidth, 400)
-        } catch (e) {}
+      panes.current.forEach((p, idx) => {
+         // 🔥 加入 try-catch
+         try {
+           // ✅ 縮短頁面：主圖較高、指標較矮
+           if (p.chart) p.chart.resize(p.container.clientWidth, idx === 0 ? 360 : 160)
+         } catch(e) {}
       })
       updateGlobalMask()
-
-      // ✅ 新增：resize 後也更新 iframe 高度
-      updateFrameHeight()
     })
     if (chartsContainerRef.current) ro.observe(chartsContainerRef.current)
 
@@ -582,17 +546,15 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
       // 1. 先清空 panes 列表，讓上面的事件迴圈立刻找不到目標而停止
       panes.current = []
-
+      
       // 2. 緩存舊的 charts，然後安全地移除
-      const oldCharts = [...chartInstances.current]
-      chartInstances.current = []
+      const oldCharts = [...chartInstances.current];
+      chartInstances.current = [];
 
       oldCharts.forEach((c) => {
-        if (c) {
-          try {
-            c.remove()
-          } catch (e) {}
-        }
+          if (c) {
+            try { c.remove() } catch(e) {}
+          }
       })
     }
   }, [chartsData]) // 當 chartsData 變更時 (包含 highlightRange) 重繪
@@ -601,11 +563,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   useEffect(() => {
     updateGlobalMask()
   }, [highlightRangeSig])
-
-  // ✅ 新增：當 panes 數量改變時也更新一次高度（保險）
-  useEffect(() => {
-    setTimeout(updateFrameHeight, 0)
-  }, [chartsData.length])
 
   return (
     <div ref={chartsContainerRef} style={{ position: "relative" }}>
@@ -622,33 +579,33 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
   pane.series.forEach((s) => {
     // 🔥 加入 try-catch 防止資料讀取錯誤
     try {
-      const data = s.api.dataByIndex(logical) as any
-      if (!data) return
+        const data = s.api.dataByIndex(logical) as any
+        if (!data) return
 
-      let valStr = "--"
-      let color = "#fff"
-      const opts = s.options as any
+        let valStr = "--"
+        let color = "#fff"
+        const opts = s.options as any
 
-      if (data.close !== undefined) {
-        // Candlestick
-        const isUp = data.close >= data.open
-        color = isUp ? opts.upColor : opts.downColor
-        valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(
-          data.low
-        )} C:${toFixedMaybe(data.close)}`
-      } else if (data.value !== undefined) {
-        // Line / Histogram
-        valStr = toFixedMaybe(data.value)
-        if (data.color) color = data.color
-        else if (opts.color) color = opts.color
-        else if (opts.lineColor) color = opts.lineColor
-      }
+        if (data.close !== undefined) {
+          // Candlestick
+          const isUp = data.close >= data.open
+          color = isUp ? opts.upColor : opts.downColor
+          valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(
+            data.low
+          )} C:${toFixedMaybe(data.close)}`
+        } else if (data.value !== undefined) {
+          // Line / Histogram
+          valStr = toFixedMaybe(data.value)
+          if (data.color) color = data.color
+          else if (opts.color) color = opts.color
+          else if (opts.lineColor) color = opts.lineColor
+        }
 
-      html += `<div style="display:flex;justify-content:space-between;gap:10px;color:${color}">
+        html += `<div style="display:flex;justify-content:space-between;gap:10px;color:${color}">
                 <span>${s.title}</span>
                 <span style="font-family:monospace">${valStr}</span>
             </div>`
-    } catch (e) {}
+    } catch(e) {}
   })
   pane.tooltip.innerHTML = html
   pane.tooltip.style.display = "block"
