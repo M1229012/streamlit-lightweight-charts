@@ -241,9 +241,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     }
 
     // 4. 計算像素位置
+    // 🔥 防呆保護：避免圖表銷毀後存取報錯
     const p0 = panes.current[0]
-    
-    // 🔥【防呆】確保圖表存在
     if (!p0 || !p0.chart) return 
 
     try {
@@ -411,7 +410,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
             primaryTimesRef.current = s.data
               .map((d: any) => normalizeDate(d.time))
-              // 🔥【TS 修正】明確指定參數型別為 any，避免 TS7006 錯誤
+              // 🔥 修正：明確定義參數 (t: any) 避免 TS7006 錯誤
               .filter((t: any): t is number => t !== null)
           }
 
@@ -442,7 +441,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
 
       // 顯示 VLine
-      // 🔥【防呆】包裹 try-catch 防止來源圖表已銷毀
+      // 🔥 加入 try-catch 防止來源圖表被銷毀時出錯
       try {
         const sourcePane = panes.current[sourcePaneIndex]
         if (!sourcePane || !sourcePane.chart) return 
@@ -460,9 +459,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
       // 同步 Tooltip 與 Crosshair position
       panes.current.forEach((target, idx) => {
-        // 🔥【防呆】包裹 try-catch 防止目標圖表已銷毀
+        // 🔥 加入 try-catch 防止目標圖表被銷毀時出錯
         try {
-            if(!target || !target.chart) return
+            if (!target || !target.chart) return
 
             // Tooltip
             const timeStr = formatTime(param.time)
@@ -500,7 +499,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           validCharts
             .filter((c) => c !== chart)
             .forEach((c) => {
-                // 🔥【防呆】try-catch
+                // 🔥 加入 try-catch
                 try {
                    c.timeScale().setVisibleLogicalRange(range)
                 } catch(e) {}
@@ -522,9 +521,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     // Resize Observer
     const ro = new ResizeObserver(() => {
       panes.current.forEach((p) => {
-         // 🔥【防呆】try-catch，防止 Resize 時圖表已死
+         // 🔥 加入 try-catch
          try {
-           if(p.chart) p.chart.resize(p.container.clientWidth, 300)
+           if (p.chart) p.chart.resize(p.container.clientWidth, 300)
          } catch(e) {}
       })
       updateGlobalMask()
@@ -537,7 +536,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     return () => {
       ro.disconnect()
 
-      // 1. 優先清空 panes 列表！讓上面的事件迴圈立刻找不到目標而停止
+      // 1. 先清空 panes 列表，讓上面的事件迴圈立刻找不到目標而停止
       panes.current = []
       
       // 2. 緩存舊的 charts，然後安全地移除
@@ -546,7 +545,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
       oldCharts.forEach((c) => {
           if (c) {
-            // 靜默移除，不拋出錯誤
             try { c.remove() } catch(e) {}
           }
       })
@@ -571,7 +569,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => {
   let html = `<div style="font-weight:bold;margin-bottom:4px;">${timeStr}</div>`
   pane.series.forEach((s) => {
-    // 🔥【防呆】try-catch 防止資料讀取錯誤
+    // 🔥 加入 try-catch 防止資料讀取錯誤
     try {
         const data = s.api.dataByIndex(logical) as any
         if (!data) return
