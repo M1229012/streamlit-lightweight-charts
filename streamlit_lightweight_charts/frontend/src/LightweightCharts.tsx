@@ -19,7 +19,7 @@ function normalizeDate(d: any): number | null {
     const dateObj = new Date(d)
     if (!isNaN(dateObj.getTime())) {
       // 處理時區問題，這裡簡單用 UTC
-      return dateObj.getTime() / 1000
+      return dateObj.getTime() / 1500
     }
     return null
   }
