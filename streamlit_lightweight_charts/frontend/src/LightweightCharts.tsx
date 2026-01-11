@@ -371,7 +371,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       // Create Chart
       // 🔥🔥🔥 這裡修改高度：從 300 加大到 400
       const chart = createChart(container, {
-        height: 400,
+        height: 300,
         width: container.clientWidth || 600,
         ...chartsData[i].chart,
         layout: {
