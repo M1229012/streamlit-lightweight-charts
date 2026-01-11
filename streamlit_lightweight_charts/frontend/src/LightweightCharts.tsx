@@ -241,12 +241,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     }
 
     // 4. 計算像素位置
+    // 🔥 防呆：避免取不到 chart
     const p0 = panes.current[0]
-    
-    // 🔥 防呆：確認圖表是否存在
     if (!p0 || !p0.chart) return 
 
-    // 🔥 加上 try-catch 防止取 timeScale 時剛好被銷毀
     try {
         const timeScale = p0.chart.timeScale()
 
@@ -287,7 +285,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         mask.style.left = `${styleLeft}px`
         mask.style.width = `${styleWidth}px`
     } catch(e) {
-        // 圖表被銷毀，忽略錯誤
         mask.style.display = "none"
     }
   }
@@ -413,8 +410,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
             primaryTimesRef.current = s.data
               .map((d: any) => normalizeDate(d.time))
-              // 🔥 明確定義型別避免 TS 錯誤
-              .filter((t:any): t is number => t !== null)
+              // 🔥 修正 1：明確定義參數 (t: any) 避免 TS7006 錯誤
+              .filter((t: any): t is number => t !== null)
           }
 
           panes.current[i].series.push({
@@ -444,12 +441,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
 
       // 顯示 VLine
-      // 🔥 加 try-catch 防止來源圖表被銷毀時出錯
+      // 🔥 修正 2：加入 try-catch 防止 Object disposed
       try {
         const sourcePane = panes.current[sourcePaneIndex]
-        
-        // 如果圖表已銷毀，不做事
-        if (!sourcePane || !sourcePane.chart) return
+        if(!sourcePane || !sourcePane.chart) return // Double check
 
         const rawX = sourcePane.chart.timeScale().timeToCoordinate(param.time)
         if (rawX === null) return
@@ -460,16 +455,16 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
         vline.style.left = `${absoluteX}px`
         vline.style.display = "block"
-      } catch (e) {
-        return 
+      } catch(e) {
+          // ignore error
+          return
       }
 
       // 同步 Tooltip 與 Crosshair position
       panes.current.forEach((target, idx) => {
-        // 🔥 加 try-catch，如果圖表已銷毀就略過
+        // 🔥 修正 3：加入 try-catch
         try {
-            // 如果目標圖表已銷毀，跳過
-            if (!target || !target.chart) return
+            if(!target.chart) return // Check alive
 
             // Tooltip
             const timeStr = formatTime(param.time)
@@ -481,14 +476,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
             // Sync chart crosshair (如果不是來源圖表)
             if (idx !== sourcePaneIndex) {
-               // 這是最容易報錯的地方，確保 target.chart 存在再呼叫
-               // 🔥 Double-Check inside Try-Catch
-               if (target.chart) {
-                   target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
-               }
+              // 這是最容易報錯的地方，加強防護
+              if (target.chart) {
+                target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
+              }
             }
         } catch(e) {
-            // 忽略 Object is disposed 錯誤
+            // ignore
         }
       })
     }
@@ -508,7 +502,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           validCharts
             .filter((c) => c !== chart)
             .forEach((c) => {
-                // 🔥 加 try-catch
+                // 🔥 修正 4：加入 try-catch
                 try {
                    c.timeScale().setVisibleLogicalRange(range)
                 } catch(e) {}
@@ -530,12 +524,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     // Resize Observer
     const ro = new ResizeObserver(() => {
       panes.current.forEach((p) => {
-        // 🔥 加 try-catch
-        try {
-            if (p.chart) {
-                p.chart.resize(p.container.clientWidth, 300)
-            }
-        } catch(e) {}
+          // 🔥 修正 5：加入 try-catch
+          try {
+             if(p.chart) p.chart.resize(p.container.clientWidth, 300)
+          } catch(e) {}
       })
       updateGlobalMask()
     })
@@ -548,12 +540,11 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       ro.disconnect()
 
       // 1. 先把 panes 陣列清空，這樣還沒執行完的 Event Loop 就會因為找不到 target 而停止
-      // 這能防止 forEach 迴圈在圖表被 dispose 後還繼續執行
       panes.current = []
       
       // 2. 緩存舊的 charts，然後安全地移除
       const oldCharts = [...chartInstances.current];
-      chartInstances.current = [];
+      chartInstances.current = []; // 切斷引用
 
       oldCharts.forEach((c) => {
           if (c) {
@@ -581,7 +572,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => {
   let html = `<div style="font-weight:bold;margin-bottom:4px;">${timeStr}</div>`
   pane.series.forEach((s) => {
-    // 🔥 加 try-catch 防止 dataByIndex 錯誤
+    // 🔥 修正 6：加入 try-catch 防止資料存取錯誤
     try {
         const data = s.api.dataByIndex(logical) as any
         if (!data) return
@@ -591,25 +582,27 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
         const opts = s.options as any
 
         if (data.close !== undefined) {
-        // Candlestick
-        const isUp = data.close >= data.open
-        color = isUp ? opts.upColor : opts.downColor
-        valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(
+          // Candlestick
+          const isUp = data.close >= data.open
+          color = isUp ? opts.upColor : opts.downColor
+          valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(
             data.low
-        )} C:${toFixedMaybe(data.close)}`
+          )} C:${toFixedMaybe(data.close)}`
         } else if (data.value !== undefined) {
-        // Line / Histogram
-        valStr = toFixedMaybe(data.value)
-        if (data.color) color = data.color
-        else if (opts.color) color = opts.color
-        else if (opts.lineColor) color = opts.lineColor
+          // Line / Histogram
+          valStr = toFixedMaybe(data.value)
+          if (data.color) color = data.color
+          else if (opts.color) color = opts.color
+          else if (opts.lineColor) color = opts.lineColor
         }
 
         html += `<div style="display:flex;justify-content:space-between;gap:10px;color:${color}">
                 <span>${s.title}</span>
                 <span style="font-family:monospace">${valStr}</span>
             </div>`
-    } catch(e) {}
+    } catch(e) {
+        // ignore
+    }
   })
   pane.tooltip.innerHTML = html
   pane.tooltip.style.display = "block"
