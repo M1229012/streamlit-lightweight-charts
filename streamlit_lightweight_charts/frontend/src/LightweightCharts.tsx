@@ -127,7 +127,8 @@ function ensureGlobalMask(host: HTMLDivElement) {
     Object.assign(mask.style, {
       position: "absolute",
       top: "0px",
-      bottom: "0px",
+      // ✅ 修正：不要用 bottom:0 讓遮罩吃滿整個 host（會蓋到 RSI/MACD）
+      height: "0px",
       left: "0px",
       width: "0px",
       display: "none",
@@ -243,50 +244,62 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     // 4. 計算像素位置
     const p0 = panes.current[0]
     // 🔥 防呆：確認圖表是否存在，防止 Object is disposed
-    if (!p0 || !p0.chart) return 
+    if (!p0 || !p0.chart) return
 
     // 🔥 加上 try-catch 防止操作已銷毀的圖表 API
     try {
-        const timeScale = p0.chart.timeScale()
+      const timeScale = p0.chart.timeScale()
 
-        const x1 = timeScale.logicalToCoordinate(startIdx as any)
-        const x2 = timeScale.logicalToCoordinate(endIdx as any)
+      const x1 = timeScale.logicalToCoordinate(startIdx as any)
+      const x2 = timeScale.logicalToCoordinate(endIdx as any)
 
-        // 重新取得確實的座標 (若是 null 則給極端值讓遮罩至少能顯示/或被判定為無效)
-        const safeX1 = x1 ?? -100000
-        const safeX2 = x2 ?? -100000
+      // 重新取得確實的座標 (若是 null 則給極端值讓遮罩至少能顯示/或被判定為無效)
+      const safeX1 = x1 ?? -100000
+      const safeX2 = x2 ?? -100000
 
-        // ✅ 防呆：避免 NaN/Infinity 造成 NaNpx
-        if (!Number.isFinite(safeX1) || !Number.isFinite(safeX2)) {
-          mask.style.display = "none"
-          return
-        }
-
-        const hostRect = host.getBoundingClientRect()
-        const paneRect = p0.container.getBoundingClientRect()
-
-        // 計算相對於 host 的偏移量
-        const offsetX = paneRect.left - hostRect.left
-
-        // ✅ 核心修正：不要再用可能算出 NaN 的 barWidth 估算
-        // 直接用座標 x1/x2 + 固定 padding 算遮罩範圍
-        const padding = 3 // 你要更寬可以調大，例如 6、8
-        const left = Math.min(safeX1, safeX2) - padding
-        const right = Math.max(safeX1, safeX2) + padding
-
-        const styleLeft = offsetX + left
-        const styleWidth = right - left
-
-        if (!Number.isFinite(styleLeft) || !Number.isFinite(styleWidth) || styleWidth <= 0) {
-          mask.style.display = "none"
-          return
-        }
-
-        mask.style.display = "block"
-        mask.style.left = `${styleLeft}px`
-        mask.style.width = `${styleWidth}px`
-    } catch(e) {
+      // ✅ 防呆：避免 NaN/Infinity 造成 NaNpx
+      if (!Number.isFinite(safeX1) || !Number.isFinite(safeX2)) {
         mask.style.display = "none"
+        return
+      }
+
+      const hostRect = host.getBoundingClientRect()
+      const paneRect = p0.container.getBoundingClientRect()
+
+      // 計算相對於 host 的偏移量
+      const offsetX = paneRect.left - hostRect.left
+
+      // ✅ 新增：只讓遮罩覆蓋「主圖 pane」的高度，避免蓋到 MACD/RSI
+      const offsetY = paneRect.top - hostRect.top
+      const paneH = paneRect.height
+
+      if (!Number.isFinite(offsetY) || !Number.isFinite(paneH) || paneH <= 0) {
+        mask.style.display = "none"
+        return
+      }
+
+      mask.style.top = `${offsetY}px`
+      mask.style.height = `${paneH}px`
+
+      // ✅ 核心修正：不要再用可能算出 NaN 的 barWidth 估算
+      // 直接用座標 x1/x2 + 固定 padding 算遮罩範圍
+      const padding = 3 // 你要更寬可以調大，例如 6、8
+      const left = Math.min(safeX1, safeX2) - padding
+      const right = Math.max(safeX1, safeX2) + padding
+
+      const styleLeft = offsetX + left
+      const styleWidth = right - left
+
+      if (!Number.isFinite(styleLeft) || !Number.isFinite(styleWidth) || styleWidth <= 0) {
+        mask.style.display = "none"
+        return
+      }
+
+      mask.style.display = "block"
+      mask.style.left = `${styleLeft}px`
+      mask.style.width = `${styleWidth}px`
+    } catch (e) {
+      mask.style.display = "none"
     }
   }
 
@@ -445,7 +458,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       // 🔥 加入 try-catch 防止來源圖表被銷毀時報錯
       try {
         const sourcePane = panes.current[sourcePaneIndex]
-        if(!sourcePane || !sourcePane.chart) return 
+        if (!sourcePane || !sourcePane.chart) return
 
         const rawX = sourcePane.chart.timeScale().timeToCoordinate(param.time)
         if (rawX === null) return
@@ -456,30 +469,32 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
         vline.style.left = `${absoluteX}px`
         vline.style.display = "block"
-      } catch(e) { return }
+      } catch (e) {
+        return
+      }
 
       // 同步 Tooltip 與 Crosshair position
       panes.current.forEach((target, idx) => {
         // 🔥 加入 try-catch 防止目標圖表被銷毀時報錯
         try {
-            if(!target || !target.chart) return
+          if (!target || !target.chart) return
 
-            // Tooltip
-            const timeStr = formatTime(param.time)
-            // 這裡需要用 coordinate 反推 logical index 來找數據
-            const logical = sourceChart.timeScale().coordinateToLogical(param.point!.x)
-            if (logical !== null) {
-              updatePaneTooltip(target, timeStr, Math.round(logical))
-            }
+          // Tooltip
+          const timeStr = formatTime(param.time)
+          // 這裡需要用 coordinate 反推 logical index 來找數據
+          const logical = sourceChart.timeScale().coordinateToLogical(param.point!.x)
+          if (logical !== null) {
+            updatePaneTooltip(target, timeStr, Math.round(logical))
+          }
 
-            // Sync chart crosshair (如果不是來源圖表)
-            if (idx !== sourcePaneIndex) {
-              // 這是最容易報錯的地方，加強防護
-              if (target.chart) {
-                target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
-              }
+          // Sync chart crosshair (如果不是來源圖表)
+          if (idx !== sourcePaneIndex) {
+            // 這是最容易報錯的地方，加強防護
+            if (target.chart) {
+              target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
             }
-        } catch(e) {}
+          }
+        } catch (e) {}
       })
     }
 
@@ -498,10 +513,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           validCharts
             .filter((c) => c !== chart)
             .forEach((c) => {
-                // 🔥 加入 try-catch
-                try {
-                   c.timeScale().setVisibleLogicalRange(range)
-                } catch(e) {}
+              // 🔥 加入 try-catch
+              try {
+                c.timeScale().setVisibleLogicalRange(range)
+              } catch (e) {}
             })
           isSyncing = false
           // 更新遮罩
@@ -520,10 +535,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     // Resize Observer
     const ro = new ResizeObserver(() => {
       panes.current.forEach((p) => {
-          // 🔥 加入 try-catch
-          try {
-             if(p.chart) p.chart.resize(p.container.clientWidth, 300)
-          } catch(e) {}
+        // 🔥 加入 try-catch
+        try {
+          if (p.chart) p.chart.resize(p.container.clientWidth, 300)
+        } catch (e) {}
       })
       updateGlobalMask()
     })
@@ -538,15 +553,17 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       // 1. 先把 panes 陣列清空！這是解決 Object is disposed 的關鍵！
       // 這樣上面的 syncCrosshair 迴圈就會因為陣列為空而自動停止
       panes.current = []
-      
+
       // 2. 緩存舊的 charts，然後安全地移除
-      const oldCharts = [...chartInstances.current];
-      chartInstances.current = [];
+      const oldCharts = [...chartInstances.current]
+      chartInstances.current = []
 
       oldCharts.forEach((c) => {
-          if (c) {
-            try { c.remove() } catch(e) {}
-          }
+        if (c) {
+          try {
+            c.remove()
+          } catch (e) {}
+        }
       })
     }
   }, [chartsData]) // 當 chartsData 變更時 (包含 highlightRange) 重繪
@@ -571,34 +588,34 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
   pane.series.forEach((s) => {
     // 🔥 加入 try-catch 防止資料存取錯誤
     try {
-        const data = s.api.dataByIndex(logical) as any
-        if (!data) return
+      const data = s.api.dataByIndex(logical) as any
+      if (!data) return
 
-        let valStr = "--"
-        let color = "#fff"
-        const opts = s.options as any
+      let valStr = "--"
+      let color = "#fff"
+      const opts = s.options as any
 
-        if (data.close !== undefined) {
-          // Candlestick
-          const isUp = data.close >= data.open
-          color = isUp ? opts.upColor : opts.downColor
-          valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(
-            data.low
-          )} C:${toFixedMaybe(data.close)}`
-        } else if (data.value !== undefined) {
-          // Line / Histogram
-          valStr = toFixedMaybe(data.value)
-          if (data.color) color = data.color
-          else if (opts.color) color = opts.color
-          else if (opts.lineColor) color = opts.lineColor
-        }
+      if (data.close !== undefined) {
+        // Candlestick
+        const isUp = data.close >= data.open
+        color = isUp ? opts.upColor : opts.downColor
+        valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(
+          data.low
+        )} C:${toFixedMaybe(data.close)}`
+      } else if (data.value !== undefined) {
+        // Line / Histogram
+        valStr = toFixedMaybe(data.value)
+        if (data.color) color = data.color
+        else if (opts.color) color = opts.color
+        else if (opts.lineColor) color = opts.lineColor
+      }
 
-        html += `<div style="display:flex;justify-content:space-between;gap:10px;color:${color}">
+      html += `<div style="display:flex;justify-content:space-between;gap:10px;color:${color}">
                 <span>${s.title}</span>
                 <span style="font-family:monospace">${valStr}</span>
             </div>`
-    } catch(e) {
-        // ignore
+    } catch (e) {
+      // ignore
     }
   })
   pane.tooltip.innerHTML = html
