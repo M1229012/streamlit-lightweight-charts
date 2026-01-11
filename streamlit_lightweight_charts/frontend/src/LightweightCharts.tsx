@@ -1,44 +1,33 @@
 import { useRenderData } from "streamlit-component-lib-react-hooks"
 import { createChart, IChartApi, MouseEventParams, ISeriesApi } from "lightweight-charts"
-import React, { useRef, useEffect, useMemo } from "react"
+import React, { useRef, useEffect, useMemo, useState } from "react"
 
 // ====================================================================
-// 1. 輔助函式：統一日期處理 (解決 String vs Object 比較失敗的問題)
+// 1. 輔助函式：統一日期處理
 // ====================================================================
 
-// 將任何格式的日期 (String 'YYYY-MM-DD', Object {year,month,day}, Number timestamp)
-// 統一轉換為 UNIX Timestamp (秒) 以便比較
 function normalizeDate(d: any): number | null {
   if (d == null) return null
-
-  // 1. 如果已經是數字 (Unix Timestamp)
   if (typeof d === "number") return d
-
-  // 2. 如果是字串 (YYYY-MM-DD)
   if (typeof d === "string") {
     const dateObj = new Date(d)
     if (!isNaN(dateObj.getTime())) {
-      // 處理時區問題，這裡簡單用 UTC
       return dateObj.getTime() / 1000
     }
     return null
   }
-
-  // 3. 如果是 Lightweight Charts 的物件格式 { year: 2023, month: 1, day: 1 }
   if (typeof d === "object" && "year" in d && "month" in d && "day" in d) {
     const dateObj = new Date(d.year, d.month - 1, d.day)
     return dateObj.getTime() / 1000
   }
-
   return null
 }
 
 function formatTime(t: any) {
   if (t == null) return ""
-  // 嘗試轉成 Date 物件輸出字串
   if (typeof t === "number") {
     const d = new Date(t * 1000)
-    return d.toISOString().split("T")[0] // YYYY-MM-DD
+    return d.toISOString().split("T")[0]
   }
   if (typeof t === "object" && "year" in t) {
     const y = t.year
@@ -77,7 +66,7 @@ function ensurePaneTooltip(container: HTMLDivElement) {
       display: "none",
       padding: "8px 10px",
       fontSize: "12px",
-      zIndex: "1000", // Tooltip 在最上層
+      zIndex: "1000",
       top: "10px",
       left: "10px",
       pointerEvents: "none",
@@ -108,7 +97,7 @@ function ensureGlobalVLine(host: HTMLDivElement) {
       background: "rgba(255,255,255,0.3)",
       display: "none",
       pointerEvents: "none",
-      zIndex: "900", // 十字線
+      zIndex: "900",
       transform: "translateX(-0.5px)",
     })
     const style = getComputedStyle(host)
@@ -118,7 +107,6 @@ function ensureGlobalVLine(host: HTMLDivElement) {
   return line
 }
 
-// 建立全域遮罩 (黃色背景區塊)
 function ensureGlobalMask(host: HTMLDivElement) {
   let mask = host.querySelector(".global-mask") as HTMLDivElement | null
   if (!mask) {
@@ -132,9 +120,7 @@ function ensureGlobalMask(host: HTMLDivElement) {
       width: "0px",
       display: "none",
       pointerEvents: "none",
-      // ✅ 關鍵：確保遮罩在 Canvas 之上、但在 VLine/Tooltip 之下
       zIndex: "800",
-      // ✅ 樣式：半透明黃色 (模仿籌碼K線)
       background: "rgba(255, 235, 59, 0.15)",
       borderLeft: "1px solid rgba(255, 235, 59, 0.4)",
       borderRight: "1px solid rgba(255, 235, 59, 0.4)",
@@ -147,7 +133,22 @@ function ensureGlobalMask(host: HTMLDivElement) {
 }
 
 // ====================================================================
-// 3. React Component
+// 3. 畫線工具型別定義 (新增)
+// ====================================================================
+
+type Point = {
+  time: number // Timestamp
+  price: number
+}
+
+type DrawingLine = {
+  id: string
+  p1: Point
+  p2: Point
+}
+
+// ====================================================================
+// 4. React Component
 // ====================================================================
 
 type SeriesMeta = {
@@ -173,8 +174,16 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   const globalVLineRef = useRef<HTMLDivElement | null>(null)
   const globalMaskRef = useRef<HTMLDivElement | null>(null)
 
-  // 儲存主圖的時間序列 (用於計算遮罩位置)
+  // 儲存主圖的時間序列
   const primaryTimesRef = useRef<number[]>([])
+
+  // --- 畫線功能 State (新增) ---
+  const [isDrawingMode, setIsDrawingMode] = useState(false)
+  const [drawings, setDrawings] = useState<DrawingLine[]>([])
+  const [tempStartPoint, setTempStartPoint] = useState<Point | null>(null)
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null)
+  // 用來強制刷新 SVG (當圖表捲動時)
+  const [renderTick, setRenderTick] = useState(0)
 
   const chartElRefs = useMemo(() => {
     return Array(chartsData.length)
@@ -182,7 +191,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       .map(() => React.createRef<HTMLDivElement>())
   }, [chartsData.length])
 
-  // 監聽 highlightRange 變化字串，確保 Python 端改變時觸發更新
+  // 監聽 highlightRange
   const highlightRangeSig = useMemo(() => {
     const hr = (renderData.args?.["charts"]?.[0] as any)?.highlightRange
     if (!hr) return ""
@@ -198,15 +207,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     if (!host || !mask) return
 
     const hr = chartsData?.[0]?.highlightRange
-    const times = primaryTimesRef.current // 這裡是已經 normalize 過的 timestamps
+    const times = primaryTimesRef.current
 
-    // 1. 檢查資料是否充足
     if (!hr || !hr.start || !hr.end || !times || times.length === 0 || panes.current.length === 0) {
       mask.style.display = "none"
       return
     }
 
-    // 2. 將 Python 傳來的 start/end 轉成 Timestamp
     const tStart = normalizeDate(hr.start)
     const tEnd = normalizeDate(hr.end)
 
@@ -215,8 +222,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       return
     }
 
-    // 3. 在 times 陣列中尋找對應的 Index
-    // startIdx: 第一個 >= tStart 的位置
     let startIdx = -1
     for (let i = 0; i < times.length; i++) {
       if (times[i] >= tStart) {
@@ -225,7 +230,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
     }
 
-    // endIdx: 最後一個 <= tEnd 的位置
     let endIdx = -1
     for (let i = times.length - 1; i >= 0; i--) {
       if (times[i] <= tEnd) {
@@ -234,24 +238,20 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
     }
 
-    // 如果找不到或範圍無效
     if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) {
       mask.style.display = "none"
       return
     }
 
-    // 4. 計算像素位置
     const p0 = panes.current[0]
     const timeScale = p0.chart.timeScale()
 
     const x1 = timeScale.logicalToCoordinate(startIdx as any)
     const x2 = timeScale.logicalToCoordinate(endIdx as any)
 
-    // 重新取得確實的座標 (若是 null 則給極端值讓遮罩至少能顯示/或被判定為無效)
     const safeX1 = x1 ?? -100000
     const safeX2 = x2 ?? -100000
 
-    // ✅ 防呆：避免 NaN/Infinity 造成 NaNpx
     if (!Number.isFinite(safeX1) || !Number.isFinite(safeX2)) {
       mask.style.display = "none"
       return
@@ -259,13 +259,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
     const hostRect = host.getBoundingClientRect()
     const paneRect = p0.container.getBoundingClientRect()
-
-    // 計算相對於 host 的偏移量
     const offsetX = paneRect.left - hostRect.left
 
-    // ✅ 核心修正：不要再用可能算出 NaN 的 barWidth 估算
-    // 直接用座標 x1/x2 + 固定 padding 算遮罩範圍
-    const padding = 3 // 你要更寬可以調大，例如 6、8
+    const padding = 3
     const left = Math.min(safeX1, safeX2) - padding
     const right = Math.max(safeX1, safeX2) + padding
 
@@ -289,7 +285,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     if (!chartsData?.length) return
     if (chartElRefs.some((ref) => !ref.current)) return
 
-    // Cleanup
     chartInstances.current.forEach((c) => c && c.remove())
     chartInstances.current = []
     panes.current = []
@@ -305,10 +300,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         if (globalVLineRef.current) globalVLineRef.current.style.display = "none"
       }
       host.addEventListener("mouseleave", mouseLeaveHandler)
-      // 記住 cleanup
       return () => host.removeEventListener("mouseleave", mouseLeaveHandler)
     }
-  }, [chartsData.length]) // 僅在圖表數量改變時重置 DOM 結構
+  }, [chartsData.length])
 
   // =========================================================
   // 建立/更新 Series 與 Data
@@ -316,8 +310,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   useEffect(() => {
     if (!chartsData?.length) return
 
-    // 如果已經有 instances，我們可以選擇 destroy 重建以確保資料乾淨
-    // 為求穩健，這裡採用重建策略
     chartInstances.current.forEach((c) => c && c.remove())
     chartInstances.current = []
     panes.current = []
@@ -327,7 +319,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const container = ref.current
       if (!container) return
 
-      // Create Chart
       const chart = createChart(container, {
         height: 300,
         width: container.clientWidth || 600,
@@ -350,12 +341,11 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         },
       })
 
-      // Crosshair config
       chart.applyOptions({
         crosshair: {
-          mode: 1, // Magnet
+          mode: 1,
           vertLine: {
-            visible: false, // 我們用 global vline
+            visible: false,
             labelBackgroundColor: "#4c525e",
           },
           horzLine: {
@@ -369,7 +359,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const tooltip = ensurePaneTooltip(container)
       panes.current[i] = { chart, container, tooltip, series: [] }
 
-      // Add Series
       for (const s of chartsData[i].series) {
         let api: ISeriesApi<any> | null = null
         switch (s.type) {
@@ -399,7 +388,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           api.setData(s.data)
           if (s.markers) api.setMarkers(s.markers)
 
-          // 儲存主圖 (第一張圖) 的時間序列，並正規化
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
             primaryTimesRef.current = s.data
               .map((d: any) => normalizeDate(d.time))
@@ -414,15 +402,19 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         }
       }
 
-      // Fit Content
       chart.timeScale().fitContent()
+
+      // ✅ 新增：訂閱可見範圍變更，強制 React 重新渲染 SVG 線條
+      chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+        setRenderTick((t) => t + 1)
+        requestAnimationFrame(updateGlobalMask)
+      })
     })
 
     // =========================================================
     // 事件同步邏輯
     // =========================================================
 
-    // Crosshair Sync
     const syncCrosshair = (sourceChart: IChartApi, param: MouseEventParams, sourcePaneIndex: number) => {
       const vline = globalVLineRef.current
       const host = chartsContainerRef.current
@@ -432,7 +424,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
-      // 顯示 VLine
       const sourcePane = panes.current[sourcePaneIndex]
       const rawX = sourcePane.chart.timeScale().timeToCoordinate(param.time)
       if (rawX === null) return
@@ -444,17 +435,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       vline.style.left = `${absoluteX}px`
       vline.style.display = "block"
 
-      // 同步 Tooltip 與 Crosshair position
       panes.current.forEach((target, idx) => {
-        // Tooltip
         const timeStr = formatTime(param.time)
-        // 這裡需要用 coordinate 反推 logical index 來找數據
         const logical = sourceChart.timeScale().coordinateToLogical(param.point!.x)
         if (logical !== null) {
           updatePaneTooltip(target, timeStr, Math.round(logical))
         }
 
-        // Sync chart crosshair (如果不是來源圖表)
         if (idx !== sourcePaneIndex) {
           target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
         }
@@ -465,7 +452,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       p.chart.subscribeCrosshairMove((param) => syncCrosshair(p.chart, param, idx))
     })
 
-    // Time Scale Sync (Visible Range)
     const validCharts = chartInstances.current.filter((c): c is IChartApi => c !== null)
     if (validCharts.length > 1) {
       let isSyncing = false
@@ -477,23 +463,17 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             .filter((c) => c !== chart)
             .forEach((c) => c.timeScale().setVisibleLogicalRange(range))
           isSyncing = false
-          // 更新遮罩
-          requestAnimationFrame(updateGlobalMask)
         })
-      })
-    } else if (validCharts.length === 1) {
-      validCharts[0].timeScale().subscribeVisibleLogicalRangeChange(() => {
-        requestAnimationFrame(updateGlobalMask)
       })
     }
 
-    // 初始化遮罩
     setTimeout(updateGlobalMask, 100)
 
-    // Resize Observer
     const ro = new ResizeObserver(() => {
       panes.current.forEach((p) => p.chart.resize(p.container.clientWidth, 300))
       updateGlobalMask()
+      // Resize 也需要重繪 SVG
+      setRenderTick((t) => t + 1)
     })
     if (chartsContainerRef.current) ro.observe(chartsContainerRef.current)
 
@@ -501,18 +481,206 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       ro.disconnect()
       chartInstances.current.forEach((c) => c && c.remove())
     }
-  }, [chartsData]) // 當 chartsData 變更時 (包含 highlightRange) 重繪
+  }, [chartsData])
 
-  // 額外 Effect: 當 highlightRange 改變時，強制更新 Mask (不做整圖重繪)
   useEffect(() => {
     updateGlobalMask()
   }, [highlightRangeSig])
 
+  // =========================================================
+  // 畫線邏輯處理 (新增)
+  // =========================================================
+
+  // 1. 將螢幕座標轉為 Chart 邏輯座標
+  const getChartPoint = (e: React.MouseEvent<HTMLDivElement>): Point | null => {
+    if (panes.current.length === 0) return null
+    
+    // 我們假設畫線主要在第一張圖 (主圖)
+    const pane = panes.current[0] 
+    const rect = pane.container.getBoundingClientRect()
+    
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+
+    const timeScale = pane.chart.timeScale()
+    const series = pane.series[0]?.api // 取得主序列來計算價格
+
+    if (!series) return null
+
+    const time = timeScale.coordinateToTime(x)
+    const price = series.coordinateToPrice(y)
+
+    // normalize time
+    const normalizedTime = normalizeDate(time)
+
+    if (normalizedTime === null || price === null) return null
+    return { time: normalizedTime, price }
+  }
+
+  // 2. 點擊處理
+  const handlePaneClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDrawingMode) return
+
+    const point = getChartPoint(e)
+    if (!point) return
+
+    if (!tempStartPoint) {
+      // 第一點
+      setTempStartPoint(point)
+    } else {
+      // 第二點：完成畫線
+      const newLine: DrawingLine = {
+        id: Date.now().toString(),
+        p1: tempStartPoint,
+        p2: point,
+      }
+      setDrawings((prev) => [...prev, newLine])
+      setTempStartPoint(null)
+      // 可以選擇畫完一條就退出模式，或者繼續畫，這裡選擇繼續畫
+    }
+  }
+
+  // 3. 滑鼠移動 (為了預覽線)
+  const handlePaneMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDrawingMode) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    setMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
+  }
+
+  // 4. 計算 SVG 線條座標
+  const getLineCoordinates = (p1: Point, p2: Point) => {
+    if (panes.current.length === 0) return null
+    const pane = panes.current[0]
+    const timeScale = pane.chart.timeScale()
+    const series = pane.series[0]?.api
+
+    if (!series) return null
+
+    const x1 = timeScale.timeToCoordinate(p1.time as any)
+    const y1 = series.priceToCoordinate(p1.price)
+    const x2 = timeScale.timeToCoordinate(p2.time as any)
+    const y2 = series.priceToCoordinate(p2.price)
+
+    if (x1 === null || y1 === null || x2 === null || y2 === null) return null
+    return { x1, y1, x2, y2 }
+  }
+
+  // 5. 渲染預覽線
+  const renderPreviewLine = () => {
+    if (!tempStartPoint || !mousePos || panes.current.length === 0) return null
+    
+    const pane = panes.current[0]
+    const timeScale = pane.chart.timeScale()
+    const series = pane.series[0]?.api
+    if (!series) return null
+
+    const x1 = timeScale.timeToCoordinate(tempStartPoint.time as any)
+    const y1 = series.priceToCoordinate(tempStartPoint.price)
+    
+    // 第二點直接用滑鼠位置，比較流暢
+    const x2 = mousePos.x
+    const y2 = mousePos.y
+
+    if(x1 === null || y1 === null) return null
+
+    return (
+      <line
+        x1={x1}
+        y1={y1}
+        x2={x2}
+        y2={y2}
+        stroke="#2962FF"
+        strokeWidth="2"
+        strokeDasharray="4"
+      />
+    )
+  }
+
   return (
-    <div ref={chartsContainerRef} style={{ position: "relative" }}>
-      {chartElRefs.map((ref, i) => (
-        <div ref={ref} key={i} className="chart-pane" />
-      ))}
+    <div>
+      {/* 畫線工具列 */}
+      <div style={{ marginBottom: "10px", display: "flex", gap: "10px" }}>
+        <button
+          onClick={() => {
+            setIsDrawingMode(!isDrawingMode)
+            setTempStartPoint(null) // 切換模式時重置
+          }}
+          style={{
+            padding: "5px 10px",
+            background: isDrawingMode ? "#2962FF" : "#444",
+            color: "#fff",
+            border: "none",
+            borderRadius: "4px",
+            cursor: "pointer",
+          }}
+        >
+          {isDrawingMode ? "Exit Drawing Mode" : "Draw Trend Line"}
+        </button>
+        {drawings.length > 0 && (
+          <button
+            onClick={() => setDrawings([])}
+            style={{
+              padding: "5px 10px",
+              background: "#D32F2F",
+              color: "#fff",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer",
+            }}
+          >
+            Clear Drawings
+          </button>
+        )}
+      </div>
+
+      <div ref={chartsContainerRef} style={{ position: "relative" }}>
+        {chartElRefs.map((ref, i) => (
+          <div 
+            ref={ref} 
+            key={i} 
+            className="chart-pane" 
+            style={{ position: 'relative' }} // 確保相對定位
+            // 只有主圖 (Index 0) 支援畫線互動
+            onClick={i === 0 ? handlePaneClick : undefined}
+            onMouseMove={i === 0 ? handlePaneMouseMove : undefined}
+          >
+            {/* SVG Overlay Layer (只加在主圖) */}
+            {i === 0 && (
+              <svg
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  height: "100%",
+                  zIndex: 1001, // 比 Tooltip 高或低可自行調整，這裡設高一點確保可互動
+                  pointerEvents: isDrawingMode ? "auto" : "none", // 繪圖模式下才接收滑鼠事件
+                  overflow: "hidden"
+                }}
+              >
+                {/* 已完成的線 */}
+                {drawings.map((d) => {
+                  const coords = getLineCoordinates(d.p1, d.p2)
+                  if (!coords) return null
+                  return (
+                    <line
+                      key={d.id}
+                      x1={coords.x1}
+                      y1={coords.y1}
+                      x2={coords.x2}
+                      y2={coords.y2}
+                      stroke="#2962FF"
+                      strokeWidth="2"
+                    />
+                  )
+                })}
+                {/* 預覽線 */}
+                {isDrawingMode && renderPreviewLine()}
+              </svg>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
