@@ -342,7 +342,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
       // Create Chart
       const chart = createChart(container, {
-        height: 500,
+        height: 300,
         width: container.clientWidth || 600,
         ...chartsData[i].chart,
         layout: {
@@ -531,7 +531,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       panes.current.forEach((p) => {
         // 🔥 加入 try-catch
         try {
-          if (p.chart) p.chart.resize(p.container.clientWidth, 500)
+          if (p.chart) p.chart.resize(p.container.clientWidth, 1000)
         } catch (e) {}
       })
       updateGlobalMask()
