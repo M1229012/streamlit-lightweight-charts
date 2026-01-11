@@ -241,11 +241,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     }
 
     // 4. 計算像素位置
-    // 🔥 防呆：確認圖表是否存在
     const p0 = panes.current[0]
+    // 🔥 防呆：確認圖表是否存在
     if (!p0 || !p0.chart) return 
 
-    // 🔥 加上 try-catch 防止取 timeScale 時剛好被銷毀
     try {
         const timeScale = p0.chart.timeScale()
 
@@ -286,6 +285,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         mask.style.left = `${styleLeft}px`
         mask.style.width = `${styleWidth}px`
     } catch(e) {
+        // 圖表可能已銷毀，忽略
         mask.style.display = "none"
     }
   }
@@ -442,7 +442,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
 
       // 顯示 VLine
-      // 🔥 加入 try-catch 防止 Object disposed
       try {
         const sourcePane = panes.current[sourcePaneIndex]
         if(!sourcePane || !sourcePane.chart) return 
@@ -460,24 +459,26 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
       // 同步 Tooltip 與 Crosshair position
       panes.current.forEach((target, idx) => {
-        // 🔥 加入 try-catch
         try {
-            if(!target || !target.chart) return
+            if (!target || !target.chart) return
 
             // Tooltip
             const timeStr = formatTime(param.time)
-            // 這裡需要用 coordinate 反推 logical index 來找數據
             const logical = sourceChart.timeScale().coordinateToLogical(param.point!.x)
             if (logical !== null) {
               updatePaneTooltip(target, timeStr, Math.round(logical))
             }
 
-            // Sync chart crosshair (如果不是來源圖表)
+            // Sync chart crosshair
             if (idx !== sourcePaneIndex) {
-              // Double check chart is alive
-              if (target.chart) {
-                target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
-              }
+               // 🔥🔥 這裡就是最容易報錯的地方：加上 try-catch 保護
+               try {
+                 if (target.chart) {
+                   target.chart.setCrosshairPosition(0, param.time!, target.series[0]?.api)
+                 }
+               } catch(err) {
+                 // 忽略 Object is disposed 錯誤
+               }
             }
         } catch(e) {}
       })
@@ -498,7 +499,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           validCharts
             .filter((c) => c !== chart)
             .forEach((c) => {
-                // 🔥 加入 try-catch
                 try {
                    c.timeScale().setVisibleLogicalRange(range)
                 } catch(e) {}
@@ -520,7 +520,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     // Resize Observer
     const ro = new ResizeObserver(() => {
       panes.current.forEach((p) => {
-         // 🔥 加入 try-catch
          try {
            if(p.chart) p.chart.resize(p.container.clientWidth, 300)
          } catch(e) {}
@@ -530,18 +529,17 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     if (chartsContainerRef.current) ro.observe(chartsContainerRef.current)
 
     // =========================================================
-    // 🔥 Cleanup (最關鍵的修正：改變清除順序)
+    // 🔥 Cleanup (最關鍵的修正)
     // =========================================================
     return () => {
       ro.disconnect()
 
-      // 1. 先把 panes 陣列清空，這樣還沒執行完的 Event Loop 就會因為找不到 target 而停止
-      // 這能防止 forEach 迴圈在圖表被 dispose 後還繼續執行
+      // 1. 先清空引用，讓監聽器找不到目標，防止報錯
       panes.current = []
       
-      // 2. 緩存舊的 charts，然後安全地移除
+      // 2. 再進行銷毀
       const oldCharts = [...chartInstances.current];
-      chartInstances.current = []; // 切斷引用，確保任何滯留的邏輯不會存取到
+      chartInstances.current = [];
 
       oldCharts.forEach((c) => {
           if (c) {
@@ -569,7 +567,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => {
   let html = `<div style="font-weight:bold;margin-bottom:4px;">${timeStr}</div>`
   pane.series.forEach((s) => {
-    // 🔥 加入 try-catch 防止資料存取錯誤
     try {
         const data = s.api.dataByIndex(logical) as any
         if (!data) return
@@ -597,9 +594,7 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
                 <span>${s.title}</span>
                 <span style="font-family:monospace">${valStr}</span>
             </div>`
-    } catch(e) {
-        // ignore
-    }
+    } catch(e) {}
   })
   pane.tooltip.innerHTML = html
   pane.tooltip.style.display = "block"
