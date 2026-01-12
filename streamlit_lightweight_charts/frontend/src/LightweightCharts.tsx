@@ -172,7 +172,9 @@ function ensureDrawToolbar(
   getColor: () => string,
   setColor: (c: string) => void,
   getWidth: () => number,
-  setWidth: (w: number) => void
+  setWidth: (w: number) => void,
+  getVP: () => boolean,
+  setVP: (v: boolean) => void
 ) {
   let toolbar = host.querySelector(".draw-toolbar") as HTMLDivElement | null
   if (!toolbar) {
@@ -283,11 +285,43 @@ function ensureDrawToolbar(
       if (Number.isFinite(v)) setWidth(v)
     })
 
+    // ✅ 分價圖按鈕（開/關）
+    const vpBtn = document.createElement("button")
+    vpBtn.type = "button"
+    vpBtn.className = "vp-toggle"
+    Object.assign(vpBtn.style, {
+      fontSize: "12px",
+      padding: "6px 10px",
+      borderRadius: "6px",
+      cursor: "pointer",
+      background: "rgba(255,255,255,0.08)",
+      border: "1px solid rgba(255,255,255,0.18)",
+      color: "rgba(255,255,255,0.85)",
+      marginLeft: "2px",
+    })
+    const syncVPBtn = () => {
+      const on = getVP()
+      vpBtn.textContent = on ? "分價圖：開" : "分價圖：關"
+      Object.assign(vpBtn.style, {
+        background: on ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.08)",
+        border: on ? "1px solid rgba(255,255,255,0.35)" : "1px solid rgba(255,255,255,0.18)",
+        color: on ? "#fff" : "rgba(255,255,255,0.85)",
+      })
+    }
+    vpBtn.addEventListener("click", () => {
+      setVP(!getVP())
+      syncVPBtn()
+    })
+    syncVPBtn()
+
     // ✅ 中文
     toolbar.appendChild(mkBtn("滑鼠", "mouse"))
     toolbar.appendChild(mkBtn("直線", "line"))
     toolbar.appendChild(mkBtn("延長線", "ray"))
     toolbar.appendChild(mkBtn("水平線", "hline"))
+
+    toolbar.appendChild(divider())
+    toolbar.appendChild(vpBtn)
 
     toolbar.appendChild(divider())
     toolbar.appendChild(mkLabel("顏色"))
@@ -306,6 +340,17 @@ function ensureDrawToolbar(
   if (ci) ci.value = getColor()
   const ws = toolbar.querySelector("select") as HTMLSelectElement | null
   if (ws) ws.value = String(getWidth())
+
+  const vpBtn = toolbar.querySelector(".vp-toggle") as HTMLButtonElement | null
+  if (vpBtn) {
+    const on = getVP()
+    vpBtn.textContent = on ? "分價圖：開" : "分價圖：關"
+    Object.assign(vpBtn.style, {
+      background: on ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.08)",
+      border: on ? "1px solid rgba(255,255,255,0.35)" : "1px solid rgba(255,255,255,0.18)",
+      color: on ? "#fff" : "rgba(255,255,255,0.85)",
+    })
+  }
 
   return toolbar
 }
@@ -396,6 +441,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   // ✅✅✅ 修正點：改成 any，避免 TS 推論成 never
   const primarySeriesRef = useRef<any>(null)
 
+  // ✅ 主圖 K 線資料（用於計算分價圖）
+  const primaryCandleDataRef = useRef<any[]>([])
+  // ✅ 成交量 Map（key=round(normalized_ts) value=volume）
+  const volumeByTimeRef = useRef<Map<number, number>>(new Map())
+  // ✅ 分價圖開關
+  const vpEnabledRef = useRef<boolean>(false)
+
   // 畫線工具狀態
   const drawModeRef = useRef<DrawMode>("mouse")
   const drawColorRef = useRef<string>("#ffffff")
@@ -453,6 +505,120 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     svg.innerHTML = ""
 
     const ts = p0.chart.timeScale()
+
+    // =========================================================
+    // ✅ 分價圖（Volume Profile）：疊在主圖上（可開關）
+    // =========================================================
+    if (vpEnabledRef.current) {
+      try {
+        const range = ts.getVisibleLogicalRange?.()
+        const candles = primaryCandleDataRef.current || []
+        const volMap = volumeByTimeRef.current || new Map()
+
+        if (candles.length > 0 && range && range.from != null && range.to != null) {
+          const from = Math.max(0, Math.floor(Number(range.from)))
+          const to = Math.min(candles.length - 1, Math.ceil(Number(range.to)))
+          if (to >= from) {
+            let minP = Infinity
+            let maxP = -Infinity
+
+            for (let i = from; i <= to; i++) {
+              const d = candles[i]
+              if (!d) continue
+              const lo = typeof d.low === "number" ? d.low : null
+              const hi = typeof d.high === "number" ? d.high : null
+              if (lo == null || hi == null) continue
+              minP = Math.min(minP, lo)
+              maxP = Math.max(maxP, hi)
+            }
+
+            if (Number.isFinite(minP) && Number.isFinite(maxP) && maxP > minP) {
+              const bins = 24
+              const step = (maxP - minP) / bins
+              const acc = new Array(bins).fill(0)
+
+              for (let i = from; i <= to; i++) {
+                const d = candles[i]
+                if (!d) continue
+
+                const lo0 = typeof d.low === "number" ? d.low : null
+                const hi0 = typeof d.high === "number" ? d.high : null
+                if (lo0 == null || hi0 == null) continue
+
+                const tNorm = normalizeDate(d.time)
+                if (tNorm == null) continue
+                const key = Math.round(tNorm)
+                const vol = volMap.get(key)
+                if (vol == null || !Number.isFinite(vol) || vol <= 0) continue
+
+                const lo = Math.min(lo0, hi0)
+                const hi = Math.max(lo0, hi0)
+
+                if (Math.abs(hi - lo) < 1e-9) {
+                  const bi = Math.max(0, Math.min(bins - 1, Math.floor((lo - minP) / step)))
+                  acc[bi] += vol
+                  continue
+                }
+
+                const span = hi - lo
+                const bStart = Math.max(0, Math.min(bins - 1, Math.floor((lo - minP) / step)))
+                const bEnd = Math.max(0, Math.min(bins - 1, Math.floor((hi - minP) / step)))
+
+                for (let b = bStart; b <= bEnd; b++) {
+                  const binLo = minP + b * step
+                  const binHi = minP + (b + 1) * step
+                  const overlap = Math.max(0, Math.min(binHi, hi) - Math.max(binLo, lo))
+                  if (overlap <= 0) continue
+                  acc[b] += vol * (overlap / span)
+                }
+              }
+
+              const maxV = Math.max(...acc)
+              if (maxV > 0) {
+                const maxBarW = Math.min(140, w * 0.25)
+                const xRight = w - 6
+
+                for (let b = 0; b < bins; b++) {
+                  const v = acc[b]
+                  if (v <= 0) continue
+
+                  const binLo = minP + b * step
+                  const binHi = minP + (b + 1) * step
+
+                  const y1c = series.priceToCoordinate(binLo)
+                  const y2c = series.priceToCoordinate(binHi)
+                  if (y1c == null || y2c == null) continue
+
+                  const y1 = y1c as unknown as number
+                  const y2 = y2c as unknown as number
+                  if (!Number.isFinite(y1) || !Number.isFinite(y2)) continue
+
+                  const yTop = Math.min(y1, y2)
+                  const height = Math.abs(y2 - y1)
+                  if (height <= 0.5) continue
+
+                  const barW = (v / maxV) * maxBarW
+                  const xLeft = xRight - barW
+
+                  const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect")
+                  rect.setAttribute("x", String(xLeft))
+                  rect.setAttribute("y", String(yTop))
+                  rect.setAttribute("width", String(barW))
+                  rect.setAttribute("height", String(height))
+                  rect.setAttribute("fill", "rgba(33, 150, 243, 0.18)")
+                  rect.setAttribute("stroke", "rgba(33, 150, 243, 0.35)")
+                  rect.setAttribute("stroke-width", "1")
+                  rect.setAttribute("vector-effect", "non-scaling-stroke")
+                  svg.appendChild(rect)
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
 
     const makeLine = (x1: number, y1: number, x2: number, y2: number, color: string, width: number, dashed: boolean) => {
       const line = document.createElementNS("http://www.w3.org/2000/svg", "line")
@@ -696,6 +862,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     primaryTimesRawRef.current = []
     primaryIndexMapRef.current = new Map()
     primarySeriesRef.current = null
+    primaryCandleDataRef.current = []
+    volumeByTimeRef.current = new Map()
 
     const host = chartsContainerRef.current
     if (host) {
@@ -720,6 +888,11 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         () => drawWidthRef.current,
         (w) => {
           drawWidthRef.current = w
+          renderDrawings()
+        },
+        () => vpEnabledRef.current,
+        (v) => {
+          vpEnabledRef.current = v
           renderDrawings()
         }
       )
@@ -746,6 +919,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     primaryTimesRawRef.current = []
     primaryIndexMapRef.current = new Map()
     primarySeriesRef.current = null
+    primaryCandleDataRef.current = []
+    volumeByTimeRef.current = new Map()
 
     const clickSubscriptions: Array<{ chart: IChartApi; handler: (p: MouseEventParams) => void }> = []
     const crosshairSubscriptions: Array<{ chart: IChartApi; handler: (p: MouseEventParams) => void }> = []
@@ -828,7 +1003,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           api.setData(s.data)
           if (s.markers) api.setMarkers(s.markers)
 
+          // ✅ 主圖 K 線資料
           if (i === 0 && s.type === "Candlestick" && Array.isArray(s.data)) {
+            primaryCandleDataRef.current = s.data
+
             const rawArr: any[] = []
             const normArr: number[] = []
             const idxMap = new Map<number, number>()
@@ -849,6 +1027,18 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             primaryIndexMapRef.current = idxMap
 
             primarySeriesRef.current = api
+          }
+
+          // ✅ 成交量來源：第二個 pane 的 Histogram（i===1）
+          if (i === 1 && s.type === "Histogram" && Array.isArray(s.data)) {
+            const m = volumeByTimeRef.current
+            s.data.forEach((d: any) => {
+              const n = normalizeDate(d.time)
+              const v = typeof d.value === "number" ? d.value : null
+              if (n != null && v != null && Number.isFinite(v)) {
+                m.set(Math.round(n), v)
+              }
+            })
           }
 
           panes.current[i].series.push({
