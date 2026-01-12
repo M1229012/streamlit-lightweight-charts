@@ -263,7 +263,7 @@ function ensureDrawToolbar(
       fontSize: "12px",
       borderRadius: "6px",
       background: "#ffffff",
-      color: "#000000",
+      color: "#000000", // ✅ 字改黑色
       border: "1px solid rgba(255,255,255,0.18)",
       padding: "0 6px",
       cursor: "pointer",
@@ -275,7 +275,7 @@ function ensureDrawToolbar(
       opt.textContent = String(n)
       Object.assign(opt.style, {
         backgroundColor: "#ffffff",
-        color: "#000000",
+        color: "#000000", // ✅ option 字改黑色
       })
       widthSel.appendChild(opt)
     })
@@ -575,7 +575,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
               const maxV = Math.max(...acc)
               if (maxV > 0) {
-                const maxBarW = Math.min(140, w * 0.25)
+                // ✅ 修正：分價圖柱狀更長、更明顯
+                const maxBarW = Math.min(240, w * 0.38)
                 const xRight = w - 6
 
                 for (let b = 0; b < bins; b++) {
@@ -620,7 +621,15 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
     }
 
-    const makeLine = (x1: number, y1: number, x2: number, y2: number, color: string, width: number, dashed: boolean) => {
+    const makeLine = (
+      x1: number,
+      y1: number,
+      x2: number,
+      y2: number,
+      color: string,
+      width: number,
+      dashed: boolean
+    ) => {
       const line = document.createElementNS("http://www.w3.org/2000/svg", "line")
       line.setAttribute("x1", String(x1))
       line.setAttribute("y1", String(y1))
@@ -998,6 +1007,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         }
 
         if (api) {
+          // ✅ 修正：十字線碰到均線/任何線不要有圓點（關閉 crosshair marker）
+          if (s.type !== "Candlestick") {
+            try {
+              ;(api as any).applyOptions({ crosshairMarkerVisible: false })
+            } catch (e) {}
+          }
+
           if (s.priceScale) chart.priceScale(s.options?.priceScaleId || "").applyOptions(s.priceScale)
 
           api.setData(s.data)
@@ -1572,7 +1588,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
 // Helper for tooltip content generation (Keep logic same as before)
 const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => {
-  let html = `<div style="font-weight:bold;margin-bottom:4px;">${timeStr}</div>`
+  // ✅ 修正：十字查價資訊改成中文
+  let html = `<div style="font-weight:bold;margin-bottom:4px;">日期：${timeStr}</div>`
   pane.series.forEach((s) => {
     try {
       const data = s.api.dataByIndex(logical) as any
@@ -1583,13 +1600,31 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
       const opts = s.options as any
 
       if (data.close !== undefined) {
+        // Candlestick
         const isUp = data.close >= data.open
         color = isUp ? opts.upColor : opts.downColor
-        valStr = `O:${toFixedMaybe(data.open)} H:${toFixedMaybe(data.high)} L:${toFixedMaybe(
+
+        // ✅ 新增：顯示該棒漲跌幅（以「前一根收盤價」為基準，若不存在則用開盤價）
+        let base = data.open
+        let prevClose: any = null
+        try {
+          const prev = s.api.dataByIndex(logical - 1) as any
+          if (prev && typeof prev.close === "number") prevClose = prev.close
+        } catch (e) {}
+        if (typeof prevClose === "number" && Number.isFinite(prevClose) && prevClose !== 0) base = prevClose
+
+        let pct = 0
+        if (typeof base === "number" && Number.isFinite(base) && base !== 0) {
+          pct = ((data.close - base) / base) * 100
+        }
+        const pctStr = `${pct >= 0 ? "+" : ""}${toFixedMaybe(pct, 2)}%`
+
+        valStr = `開:${toFixedMaybe(data.open)} 高:${toFixedMaybe(data.high)} 低:${toFixedMaybe(
           data.low
-        )} C:${toFixedMaybe(data.close)}`
+        )} 收:${toFixedMaybe(data.close)}  漲跌幅:${pctStr}`
       } else if (data.value !== undefined) {
-        valStr = toFixedMaybe(data.value)
+        // Line / Histogram
+        valStr = `數值:${toFixedMaybe(data.value)}`
         if (data.color) color = data.color
         else if (opts.color) color = opts.color
         else if (opts.lineColor) color = opts.lineColor
