@@ -150,7 +150,7 @@ function ensureGlobalMask(host: HTMLDivElement) {
 // 2.1 畫線工具 DOM (Toolbar + SVG overlay)
 // ====================================================================
 
-type DrawMode = "mouse" | "line" | "ray" | "hline"
+type DrawMode = "mouse" | "line" | "ray" | "hline" | "rect"
 
 function setToolbarActive(toolbar: HTMLDivElement, mode: DrawMode) {
   const btns = toolbar.querySelectorAll("button[data-mode]") as NodeListOf<HTMLButtonElement>
@@ -263,7 +263,7 @@ function ensureDrawToolbar(
       fontSize: "12px",
       borderRadius: "6px",
       background: "#ffffff",
-      color: "#000000", // ✅ 字改黑色
+      color: "#000000",
       border: "1px solid rgba(255,255,255,0.18)",
       padding: "0 6px",
       cursor: "pointer",
@@ -275,7 +275,7 @@ function ensureDrawToolbar(
       opt.textContent = String(n)
       Object.assign(opt.style, {
         backgroundColor: "#ffffff",
-        color: "#000000", // ✅ option 字改黑色
+        color: "#000000",
       })
       widthSel.appendChild(opt)
     })
@@ -319,6 +319,7 @@ function ensureDrawToolbar(
     toolbar.appendChild(mkBtn("直線", "line"))
     toolbar.appendChild(mkBtn("延長線", "ray"))
     toolbar.appendChild(mkBtn("水平線", "hline"))
+    toolbar.appendChild(mkBtn("方框", "rect"))
 
     toolbar.appendChild(divider())
     toolbar.appendChild(vpBtn)
@@ -393,7 +394,7 @@ type PaneMeta = {
   series: SeriesMeta[]
 }
 
-type DrawingMode = "line" | "ray" | "hline"
+type DrawingMode = "line" | "ray" | "hline" | "rect"
 
 type Drawing = {
   mode: DrawingMode
@@ -411,13 +412,10 @@ type PendingPoint = {
   p: number
 }
 
+type DragPoint = "p1" | "p2" | "p"
 type DragState = {
   idx: number
-  orig: Drawing
-  startLogical: number
-  startPrice: number
-  origIdx1: number
-  origIdx2: number
+  point: DragPoint
 }
 
 const LightweightChartsMultiplePanes: React.VFC = () => {
@@ -671,6 +669,28 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       return line
     }
 
+    const makeRect = (
+      x: number,
+      y: number,
+      rw: number,
+      rh: number,
+      color: string,
+      width: number,
+      dashed: boolean
+    ) => {
+      const r = document.createElementNS("http://www.w3.org/2000/svg", "rect")
+      r.setAttribute("x", String(x))
+      r.setAttribute("y", String(y))
+      r.setAttribute("width", String(rw))
+      r.setAttribute("height", String(rh))
+      r.setAttribute("fill", "rgba(0,0,0,0)")
+      r.setAttribute("stroke", color)
+      r.setAttribute("stroke-width", String(width))
+      if (dashed) r.setAttribute("stroke-dasharray", "6,4")
+      r.setAttribute("vector-effect", "non-scaling-stroke")
+      return r
+    }
+
     const makeCircle = (cx: number, cy: number, color: string, width: number, dashed: boolean) => {
       const c = document.createElementNS("http://www.w3.org/2000/svg", "circle")
       c.setAttribute("cx", String(cx))
@@ -710,6 +730,19 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const y2 = y2c as unknown as number
 
       if (!Number.isFinite(x1) || !Number.isFinite(x2) || !Number.isFinite(y1) || !Number.isFinite(y2)) return
+
+      if (d.mode === "rect") {
+        const left = Math.min(x1, x2)
+        const top = Math.min(y1, y2)
+        const rw = Math.abs(x2 - x1)
+        const rh = Math.abs(y2 - y1)
+        if (rw > 0.5 && rh > 0.5) {
+          svg.appendChild(makeRect(left, top, rw, rh, color, width, dashed))
+          svg.appendChild(makeCircle(x1, y1, color, width, dashed))
+          svg.appendChild(makeCircle(x2, y2, color, width, dashed))
+        }
+        return
+      }
 
       if (d.mode === "line") {
         svg.appendChild(makeLine(x1, y1, x2, y2, color, width, dashed))
@@ -848,7 +881,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   }
 
   // =========================================================
-  // Backspace 刪除：取消預覽 or 刪最後一筆
+  // Backspace 刪除：取消預覽 or 刪最後一筆（保留不動）
   // =========================================================
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1224,6 +1257,20 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           }
           if (price == null || !Number.isFinite(price)) return
 
+          if (modeNow === "rect") {
+            previewRef.current = {
+              mode: "rect",
+              t1: pp.t,
+              p1: pp.p,
+              t2: param.time,
+              p2: price,
+              color: drawColorRef.current,
+              width: drawWidthRef.current,
+            }
+            renderDrawings()
+            return
+          }
+
           previewRef.current = {
             mode: modeNow === "ray" ? "ray" : "line",
             t1: pp.t,
@@ -1288,6 +1335,20 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (!pendingPointRef.current) {
             pendingPointRef.current = { mode, t, p: price }
 
+            if (mode === "rect") {
+              previewRef.current = {
+                mode: "rect",
+                t1: t,
+                p1: price,
+                t2: t,
+                p2: price,
+                color: drawColorRef.current,
+                width: drawWidthRef.current,
+              }
+              renderDrawings()
+              return
+            }
+
             previewRef.current = {
               mode: mode === "ray" ? "ray" : "line",
               t1: t,
@@ -1306,7 +1367,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const p1 = pendingPointRef.current
           pendingPointRef.current = null
 
-          const dMode: DrawingMode = p1.mode === "ray" ? "ray" : "line"
+          let dMode: DrawingMode = "line"
+          if (p1.mode === "ray") dMode = "ray"
+          else if (p1.mode === "rect") dMode = "rect"
+          else dMode = "line"
 
           const newDrawing: Drawing = {
             mode: dMode,
@@ -1330,7 +1394,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     } catch (e) {}
 
     // =========================================================
-    // ✅ 實體線可拖曳移動（只在「滑鼠模式」）
+    // ✅ 實體線：滑鼠模式下「點到物件就刪除」，拖曳只允許「端點」(p1/p2)
     // =========================================================
     try {
       const p0 = panes.current[0]
@@ -1354,24 +1418,35 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           return Math.hypot(px - bx, py - by)
         }
 
+        const distPoint = (px: number, py: number, x: number, y: number) => Math.hypot(px - x, py - y)
+
+        type HitKind = "p1" | "p2" | "p" | "body"
         const findHit = (mx: number, my: number) => {
           const ts = chart0.timeScale()
           const w = container.clientWidth || 1
           const h = container.clientHeight || 1
 
+          const endpointThreshold = 10
+          const bodyThreshold = 7
+
           let bestIdx = -1
+          let bestKind: HitKind = "body"
           let bestDist = Infinity
 
+          // 先找端點（優先）
           for (let i = 0; i < drawingsRef.current.length; i++) {
             const d = drawingsRef.current[i]
+
             if (d.mode === "hline") {
               const yc = series.priceToCoordinate(d.p1)
               if (yc == null) continue
               const y = yc as unknown as number
-              const dd = Math.abs(my - y)
-              if (dd < bestDist) {
-                bestDist = dd
+              if (!Number.isFinite(y)) continue
+              const dd = distPoint(mx, my, 10, y)
+              if (dd <= endpointThreshold && dd < bestDist) {
                 bestIdx = i
+                bestKind = "p"
+                bestDist = dd
               }
               continue
             }
@@ -1388,11 +1463,87 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             const y2 = y2c as unknown as number
             if (!Number.isFinite(x1) || !Number.isFinite(x2) || !Number.isFinite(y1) || !Number.isFinite(y2)) continue
 
+            const d1 = distPoint(mx, my, x1, y1)
+            const d2 = distPoint(mx, my, x2, y2)
+
+            if (d1 <= endpointThreshold && d1 < bestDist) {
+              bestIdx = i
+              bestKind = "p1"
+              bestDist = d1
+            }
+            if (d2 <= endpointThreshold && d2 < bestDist) {
+              bestIdx = i
+              bestKind = "p2"
+              bestDist = d2
+            }
+          }
+
+          if (bestIdx >= 0) return { idx: bestIdx, kind: bestKind, dist: bestDist }
+
+          // 再找本體（點到就刪）
+          for (let i = 0; i < drawingsRef.current.length; i++) {
+            const d = drawingsRef.current[i]
+
+            if (d.mode === "hline") {
+              const yc = series.priceToCoordinate(d.p1)
+              if (yc == null) continue
+              const y = yc as unknown as number
+              if (!Number.isFinite(y)) continue
+              const dd = Math.abs(my - y)
+              if (dd <= bodyThreshold && dd < bestDist) {
+                bestIdx = i
+                bestKind = "body"
+                bestDist = dd
+              }
+              continue
+            }
+
+            const x1c = ts.timeToCoordinate(d.t1)
+            const x2c = ts.timeToCoordinate(d.t2)
+            const y1c = series.priceToCoordinate(d.p1)
+            const y2c = series.priceToCoordinate(d.p2)
+            if (x1c == null || x2c == null || y1c == null || y2c == null) continue
+
+            const x1 = x1c as unknown as number
+            const x2 = x2c as unknown as number
+            const y1 = y1c as unknown as number
+            const y2 = y2c as unknown as number
+            if (!Number.isFinite(x1) || !Number.isFinite(x2) || !Number.isFinite(y1) || !Number.isFinite(y2)) continue
+
+            if (d.mode === "rect") {
+              const left = Math.min(x1, x2)
+              const right = Math.max(x1, x2)
+              const top = Math.min(y1, y2)
+              const bottom = Math.max(y1, y2)
+
+              const inside = mx >= left && mx <= right && my >= top && my <= bottom
+              if (inside) {
+                bestIdx = i
+                bestKind = "body"
+                bestDist = 0
+                break
+              }
+
+              // 沒在內部，靠近邊也算點到
+              const dTop = distPointToSegment(mx, my, left, top, right, top)
+              const dBot = distPointToSegment(mx, my, left, bottom, right, bottom)
+              const dL = distPointToSegment(mx, my, left, top, left, bottom)
+              const dR = distPointToSegment(mx, my, right, top, right, bottom)
+              const dd = Math.min(dTop, dBot, dL, dR)
+              if (dd <= bodyThreshold && dd < bestDist) {
+                bestIdx = i
+                bestKind = "body"
+                bestDist = dd
+              }
+              continue
+            }
+
             if (d.mode === "line") {
               const dd = distPointToSegment(mx, my, x1, y1, x2, y2)
-              if (dd < bestDist) {
-                bestDist = dd
+              if (dd <= bodyThreshold && dd < bestDist) {
                 bestIdx = i
+                bestKind = "body"
+                bestDist = dd
               }
               continue
             }
@@ -1404,24 +1555,26 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
               const dy = y2 - y1
               if (Math.abs(dx) < 1e-6) {
                 const dd = Math.abs(mx - x1)
-                if (dd < bestDist) {
-                  bestDist = dd
+                if (dd <= bodyThreshold && dd < bestDist) {
                   bestIdx = i
+                  bestKind = "body"
+                  bestDist = dd
                 }
               } else {
                 const slope = dy / dx
                 yr = y1 + slope * (xr - x1)
                 const dd = distPointToSegment(mx, my, x1, y1, xr, yr)
-                if (dd < bestDist) {
-                  bestDist = dd
+                if (dd <= bodyThreshold && dd < bestDist) {
                   bestIdx = i
+                  bestKind = "body"
+                  bestDist = dd
                 }
               }
               continue
             }
           }
 
-          return { idx: bestIdx, dist: bestDist }
+          return { idx: bestIdx, kind: bestKind, dist: bestDist }
         }
 
         domMouseDown = (e: MouseEvent) => {
@@ -1434,8 +1587,20 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const my = e.clientY - rect.top
 
           const hit = findHit(mx, my)
-          const threshold = 7
-          if (hit.idx < 0 || hit.dist > threshold) return
+          if (hit.idx < 0) return
+
+          // ✅ 端點：進入拖曳；本體：直接刪除
+          if (hit.kind === "body") {
+            try {
+              e.preventDefault()
+              e.stopPropagation()
+              ;(e as any).stopImmediatePropagation?.()
+            } catch (err) {}
+
+            drawingsRef.current.splice(hit.idx, 1)
+            renderDrawings()
+            return
+          }
 
           try {
             e.preventDefault()
@@ -1443,26 +1608,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             ;(e as any).stopImmediatePropagation?.()
           } catch (err) {}
 
-          const ts = chart0.timeScale()
-          const logical = ts.coordinateToLogical(mx as any)
-          const price = series.coordinateToPrice(my as any) as any
-          if (logical == null || price == null || !Number.isFinite(price)) return
-
-          const d = drawingsRef.current[hit.idx]
-          const orig: Drawing = { ...d }
-
-          const idx1 = d.mode === "hline" ? -1 : timeToIndex(d.t1)
-          const idx2 = d.mode === "hline" ? -1 : timeToIndex(d.t2)
-
-          dragRef.current = {
-            idx: hit.idx,
-            orig,
-            startLogical: Number(logical),
-            startPrice: Number(price),
-            origIdx1: idx1,
-            origIdx2: idx2,
-          }
-
+          dragRef.current = { idx: hit.idx, point: hit.kind === "p" ? "p" : hit.kind }
           container.style.cursor = "grabbing"
         }
 
@@ -1474,10 +1620,15 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const mx = e.clientX - rect.left
           const my = e.clientY - rect.top
 
+          // 未拖曳：更新游標提示
           if (!dragRef.current) {
             const hit = findHit(mx, my)
-            const threshold = 7
-            container.style.cursor = hit.idx >= 0 && hit.dist <= threshold ? "grab" : ""
+            if (hit.idx >= 0) {
+              if (hit.kind === "body") container.style.cursor = "pointer" // 點到就刪
+              else container.style.cursor = "grab" // 端點可拖
+            } else {
+              container.style.cursor = ""
+            }
             return
           }
 
@@ -1493,33 +1644,35 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (logicalNow == null || priceNow == null || !Number.isFinite(priceNow)) return
 
           const st = dragRef.current
-          const deltaBars = Math.round(Number(logicalNow) - st.startLogical)
-          const deltaPrice = Number(priceNow) - st.startPrice
+          const d = drawingsRef.current[st.idx]
+          if (!d) return
 
-          const orig = st.orig
-          const updated: Drawing = { ...drawingsRef.current[st.idx] }
-
-          if (orig.mode === "hline") {
-            updated.p1 = orig.p1 + deltaPrice
-            updated.p2 = updated.p1
-            drawingsRef.current[st.idx] = updated
+          // hline：拖端點只改價格
+          if (d.mode === "hline" && st.point === "p") {
+            d.p1 = Number(priceNow)
+            d.p2 = d.p1
+            drawingsRef.current[st.idx] = { ...d }
             renderDrawings()
             return
           }
 
+          // 其他：拖端點改 time + price
           const rawTimes = primaryTimesRawRef.current
           if (!rawTimes || rawTimes.length === 0) return
-          if (st.origIdx1 < 0 || st.origIdx2 < 0) return
 
-          const ni1 = clampIndex(st.origIdx1 + deltaBars)
-          const ni2 = clampIndex(st.origIdx2 + deltaBars)
+          const idxNew = clampIndex(Math.round(Number(logicalNow)))
+          const tNew = rawTimes[idxNew]
+          const pNew = Number(priceNow)
 
-          updated.t1 = rawTimes[ni1]
-          updated.t2 = rawTimes[ni2]
-          updated.p1 = orig.p1 + deltaPrice
-          updated.p2 = orig.p2 + deltaPrice
+          if (st.point === "p1") {
+            d.t1 = tNew
+            d.p1 = pNew
+          } else if (st.point === "p2") {
+            d.t2 = tNew
+            d.p2 = pNew
+          }
 
-          drawingsRef.current[st.idx] = updated
+          drawingsRef.current[st.idx] = { ...d }
           renderDrawings()
         }
 
