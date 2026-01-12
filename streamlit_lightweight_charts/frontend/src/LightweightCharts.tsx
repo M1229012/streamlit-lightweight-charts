@@ -263,7 +263,7 @@ function ensureDrawToolbar(
       fontSize: "12px",
       borderRadius: "6px",
       background: "#ffffff",
-      color: "#000000",
+      color: "#000000", // ✅ 字改黑色
       border: "1px solid rgba(255,255,255,0.18)",
       padding: "0 6px",
       cursor: "pointer",
@@ -275,7 +275,7 @@ function ensureDrawToolbar(
       opt.textContent = String(n)
       Object.assign(opt.style, {
         backgroundColor: "#ffffff",
-        color: "#000000",
+        color: "#000000", // ✅ option 字改黑色
       })
       widthSel.appendChild(opt)
     })
@@ -412,10 +412,16 @@ type PendingPoint = {
   p: number
 }
 
-type DragPoint = "p1" | "p2" | "p"
+type DragPart = "body" | "p1" | "p2"
+
 type DragState = {
   idx: number
-  point: DragPoint
+  orig: Drawing
+  startLogical: number
+  startPrice: number
+  origIdx1: number
+  origIdx2: number
+  part: DragPart
 }
 
 const LightweightChartsMultiplePanes: React.VFC = () => {
@@ -459,6 +465,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
   // 拖曳狀態（只在滑鼠模式生效）
   const dragRef = useRef<DragState | null>(null)
+
+  // ✅ 被選取的物件 index（點一下就顯示控制點）
+  const selectedIdxRef = useRef<number>(-1)
 
   const chartElRefs = useMemo(() => {
     return Array(chartsData.length)
@@ -683,9 +692,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       r.setAttribute("y", String(y))
       r.setAttribute("width", String(rw))
       r.setAttribute("height", String(rh))
-      r.setAttribute("fill", "rgba(0,0,0,0)")
       r.setAttribute("stroke", color)
       r.setAttribute("stroke-width", String(width))
+      r.setAttribute("fill", "rgba(255,255,255,0.06)")
       if (dashed) r.setAttribute("stroke-dasharray", "6,4")
       r.setAttribute("vector-effect", "non-scaling-stroke")
       return r
@@ -695,7 +704,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const c = document.createElementNS("http://www.w3.org/2000/svg", "circle")
       c.setAttribute("cx", String(cx))
       c.setAttribute("cy", String(cy))
-      c.setAttribute("r", String(Math.max(3, Math.min(5, width + 1))))
+      c.setAttribute("r", String(Math.max(3, Math.min(6, width + 2))))
       c.setAttribute("fill", color)
       c.setAttribute("opacity", dashed ? "0.65" : "0.9")
       c.setAttribute("stroke", "rgba(0,0,0,0.35)")
@@ -703,9 +712,12 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       return c
     }
 
-    const drawOne = (d: Drawing, dashed: boolean) => {
+    const drawOne = (d: Drawing, dashed: boolean, isSelected: boolean) => {
       const color = d.color
       const width = d.width
+
+      // ✅ 只有在「滑鼠模式」且被選取時才顯示控制點（水平線除外：只有一個點）
+      const showPoints = drawModeRef.current === "mouse" && (isSelected || dashed)
 
       if (d.mode === "hline") {
         const yc = series.priceToCoordinate(d.p1)
@@ -713,7 +725,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         const y = yc as unknown as number
         if (!Number.isFinite(y)) return
         svg.appendChild(makeLine(0, y, w, y, color, width, dashed))
-        svg.appendChild(makeCircle(10, y, color, width, dashed))
+        if (showPoints) svg.appendChild(makeCircle(10, y, color, width, dashed))
         return
       }
 
@@ -731,23 +743,12 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
       if (!Number.isFinite(x1) || !Number.isFinite(x2) || !Number.isFinite(y1) || !Number.isFinite(y2)) return
 
-      if (d.mode === "rect") {
-        const left = Math.min(x1, x2)
-        const top = Math.min(y1, y2)
-        const rw = Math.abs(x2 - x1)
-        const rh = Math.abs(y2 - y1)
-        if (rw > 0.5 && rh > 0.5) {
-          svg.appendChild(makeRect(left, top, rw, rh, color, width, dashed))
+      if (d.mode === "line") {
+        svg.appendChild(makeLine(x1, y1, x2, y2, color, width, dashed))
+        if (showPoints) {
           svg.appendChild(makeCircle(x1, y1, color, width, dashed))
           svg.appendChild(makeCircle(x2, y2, color, width, dashed))
         }
-        return
-      }
-
-      if (d.mode === "line") {
-        svg.appendChild(makeLine(x1, y1, x2, y2, color, width, dashed))
-        svg.appendChild(makeCircle(x1, y1, color, width, dashed))
-        svg.appendChild(makeCircle(x2, y2, color, width, dashed))
         return
       }
 
@@ -761,26 +762,57 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
         if (Math.abs(dx) < 1e-6) {
           svg.appendChild(makeLine(x1, 0, x1, h, color, width, dashed))
-          svg.appendChild(makeCircle(x1, y1, color, width, dashed))
-          svg.appendChild(makeCircle(x2, y2, color, width, dashed))
+          if (showPoints) {
+            svg.appendChild(makeCircle(x1, y1, color, width, dashed))
+            svg.appendChild(makeCircle(x2, y2, color, width, dashed))
+          }
         } else {
           const slope = dy / dx
           yr = y1 + slope * (xr - x1)
           svg.appendChild(makeLine(x1, y1, xr, yr, color, width, dashed))
+          if (showPoints) {
+            svg.appendChild(makeCircle(x1, y1, color, width, dashed))
+            svg.appendChild(makeCircle(x2, y2, color, width, dashed))
+          }
+        }
+        return
+      }
+
+      if (d.mode === "rect") {
+        const left = Math.min(x1, x2)
+        const right = Math.max(x1, x2)
+        const top = Math.min(y1, y2)
+        const bottom = Math.max(y1, y2)
+        const rw = Math.max(0, right - left)
+        const rh = Math.max(0, bottom - top)
+        if (rw <= 0.5 || rh <= 0.5) {
+          // 太小就畫一條線避免閃爍
+          svg.appendChild(makeLine(x1, y1, x2, y2, color, width, dashed))
+          if (showPoints) {
+            svg.appendChild(makeCircle(x1, y1, color, width, dashed))
+            svg.appendChild(makeCircle(x2, y2, color, width, dashed))
+          }
+          return
+        }
+        svg.appendChild(makeRect(left, top, rw, rh, color, width, dashed))
+        if (showPoints) {
           svg.appendChild(makeCircle(x1, y1, color, width, dashed))
           svg.appendChild(makeCircle(x2, y2, color, width, dashed))
         }
+        return
       }
     }
 
     // 先畫已完成的實體
-    for (const d of drawingsRef.current) {
-      drawOne(d, false)
+    for (let i = 0; i < drawingsRef.current.length; i++) {
+      const d = drawingsRef.current[i]
+      const isSel = i === selectedIdxRef.current
+      drawOne(d, false, isSel)
     }
 
     // 再畫預覽（虛線）
     if (previewRef.current) {
-      drawOne(previewRef.current, true)
+      drawOne(previewRef.current, true, true)
     }
   }
 
@@ -881,7 +913,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   }
 
   // =========================================================
-  // Backspace 刪除：取消預覽 or 刪最後一筆（保留不動）
+  // Backspace 刪除：取消預覽 or 刪「選到的那一筆」(沒有選取才刪最後一筆)
   // =========================================================
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -904,7 +936,16 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
-      // 刪除最後一筆
+      // ✅ 刪除選取的那一筆
+      if (selectedIdxRef.current >= 0 && selectedIdxRef.current < drawingsRef.current.length) {
+        e.preventDefault()
+        drawingsRef.current.splice(selectedIdxRef.current, 1)
+        selectedIdxRef.current = -1
+        renderDrawings()
+        return
+      }
+
+      // 沒選取：刪除最後一筆（保留原本行為）
       if (drawingsRef.current.length > 0) {
         e.preventDefault()
         drawingsRef.current.pop()
@@ -934,6 +975,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     primarySeriesRef.current = null
     primaryCandleDataRef.current = []
     volumeByTimeRef.current = new Map()
+    selectedIdxRef.current = -1
 
     const host = chartsContainerRef.current
     if (host) {
@@ -948,6 +990,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           drawModeRef.current = m
           pendingPointRef.current = null
           previewRef.current = null
+          // 切工具時不動你既有資料，只是重畫
           renderDrawings()
         },
         () => drawColorRef.current,
@@ -991,6 +1034,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     primarySeriesRef.current = null
     primaryCandleDataRef.current = []
     volumeByTimeRef.current = new Map()
+    selectedIdxRef.current = -1
+    dragRef.current = null
 
     const clickSubscriptions: Array<{ chart: IChartApi; handler: (p: MouseEventParams) => void }> = []
     const crosshairSubscriptions: Array<{ chart: IChartApi; handler: (p: MouseEventParams) => void }> = []
@@ -1335,22 +1380,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (!pendingPointRef.current) {
             pendingPointRef.current = { mode, t, p: price }
 
-            if (mode === "rect") {
-              previewRef.current = {
-                mode: "rect",
-                t1: t,
-                p1: price,
-                t2: t,
-                p2: price,
-                color: drawColorRef.current,
-                width: drawWidthRef.current,
-              }
-              renderDrawings()
-              return
-            }
-
             previewRef.current = {
-              mode: mode === "ray" ? "ray" : "line",
+              mode: mode === "ray" ? "ray" : mode === "rect" ? "rect" : "line",
               t1: t,
               p1: price,
               t2: t,
@@ -1367,10 +1398,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const p1 = pendingPointRef.current
           pendingPointRef.current = null
 
-          let dMode: DrawingMode = "line"
-          if (p1.mode === "ray") dMode = "ray"
-          else if (p1.mode === "rect") dMode = "rect"
-          else dMode = "line"
+          const dMode: DrawingMode = p1.mode === "ray" ? "ray" : p1.mode === "rect" ? "rect" : "line"
 
           const newDrawing: Drawing = {
             mode: dMode,
@@ -1394,7 +1422,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     } catch (e) {}
 
     // =========================================================
-    // ✅ 實體線：滑鼠模式下「點到物件就刪除」，拖曳只允許「端點」(p1/p2)
+    // ✅ 實體線：點一下顯示控制點；拖曳「點」改變端點；拖曳「線/物件本體」整個一起動（只在「滑鼠模式」）
     // =========================================================
     try {
       const p0 = panes.current[0]
@@ -1418,189 +1446,203 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           return Math.hypot(px - bx, py - by)
         }
 
-        const distPoint = (px: number, py: number, x: number, y: number) => Math.hypot(px - x, py - y)
-
-        type HitKind = "p1" | "p2" | "p" | "body"
-        const findHit = (mx: number, my: number) => {
+        const getDrawingCoords = (d: Drawing) => {
           const ts = chart0.timeScale()
           const w = container.clientWidth || 1
           const h = container.clientHeight || 1
 
-          const endpointThreshold = 10
-          const bodyThreshold = 7
-
-          let bestIdx = -1
-          let bestKind: HitKind = "body"
-          let bestDist = Infinity
-
-          // 先找端點（優先）
-          for (let i = 0; i < drawingsRef.current.length; i++) {
-            const d = drawingsRef.current[i]
-
-            if (d.mode === "hline") {
-              const yc = series.priceToCoordinate(d.p1)
-              if (yc == null) continue
-              const y = yc as unknown as number
-              if (!Number.isFinite(y)) continue
-              const dd = distPoint(mx, my, 10, y)
-              if (dd <= endpointThreshold && dd < bestDist) {
-                bestIdx = i
-                bestKind = "p"
-                bestDist = dd
-              }
-              continue
-            }
-
-            const x1c = ts.timeToCoordinate(d.t1)
-            const x2c = ts.timeToCoordinate(d.t2)
-            const y1c = series.priceToCoordinate(d.p1)
-            const y2c = series.priceToCoordinate(d.p2)
-            if (x1c == null || x2c == null || y1c == null || y2c == null) continue
-
-            const x1 = x1c as unknown as number
-            const x2 = x2c as unknown as number
-            const y1 = y1c as unknown as number
-            const y2 = y2c as unknown as number
-            if (!Number.isFinite(x1) || !Number.isFinite(x2) || !Number.isFinite(y1) || !Number.isFinite(y2)) continue
-
-            const d1 = distPoint(mx, my, x1, y1)
-            const d2 = distPoint(mx, my, x2, y2)
-
-            if (d1 <= endpointThreshold && d1 < bestDist) {
-              bestIdx = i
-              bestKind = "p1"
-              bestDist = d1
-            }
-            if (d2 <= endpointThreshold && d2 < bestDist) {
-              bestIdx = i
-              bestKind = "p2"
-              bestDist = d2
+          if (d.mode === "hline") {
+            const yc = series.priceToCoordinate(d.p1)
+            if (yc == null) return null
+            const y = yc as unknown as number
+            if (!Number.isFinite(y)) return null
+            return {
+              kind: "hline" as const,
+              p1: { x: 10, y },
+              p2: { x: 10, y },
+              body: { x1: 0, y1: y, x2: w, y2: y },
+              w,
+              h,
             }
           }
 
-          if (bestIdx >= 0) return { idx: bestIdx, kind: bestKind, dist: bestDist }
+          const x1c = ts.timeToCoordinate(d.t1)
+          const x2c = ts.timeToCoordinate(d.t2)
+          const y1c = series.priceToCoordinate(d.p1)
+          const y2c = series.priceToCoordinate(d.p2)
+          if (x1c == null || x2c == null || y1c == null || y2c == null) return null
 
-          // 再找本體（點到就刪）
-          for (let i = 0; i < drawingsRef.current.length; i++) {
-            const d = drawingsRef.current[i]
+          const x1 = x1c as unknown as number
+          const x2 = x2c as unknown as number
+          const y1 = y1c as unknown as number
+          const y2 = y2c as unknown as number
+          if (!Number.isFinite(x1) || !Number.isFinite(x2) || !Number.isFinite(y1) || !Number.isFinite(y2)) return null
 
-            if (d.mode === "hline") {
-              const yc = series.priceToCoordinate(d.p1)
-              if (yc == null) continue
-              const y = yc as unknown as number
-              if (!Number.isFinite(y)) continue
-              const dd = Math.abs(my - y)
-              if (dd <= bodyThreshold && dd < bestDist) {
-                bestIdx = i
-                bestKind = "body"
-                bestDist = dd
+          if (d.mode === "ray") {
+            const xr = w
+            let yr = y2
+            const dx = x2 - x1
+            const dy = y2 - y1
+            if (Math.abs(dx) < 1e-6) {
+              return {
+                kind: "rayV" as const,
+                p1: { x: x1, y: y1 },
+                p2: { x: x2, y: y2 },
+                body: { x1: x1, y1: 0, x2: x1, y2: h },
+                w,
+                h,
               }
-              continue
             }
-
-            const x1c = ts.timeToCoordinate(d.t1)
-            const x2c = ts.timeToCoordinate(d.t2)
-            const y1c = series.priceToCoordinate(d.p1)
-            const y2c = series.priceToCoordinate(d.p2)
-            if (x1c == null || x2c == null || y1c == null || y2c == null) continue
-
-            const x1 = x1c as unknown as number
-            const x2 = x2c as unknown as number
-            const y1 = y1c as unknown as number
-            const y2 = y2c as unknown as number
-            if (!Number.isFinite(x1) || !Number.isFinite(x2) || !Number.isFinite(y1) || !Number.isFinite(y2)) continue
-
-            if (d.mode === "rect") {
-              const left = Math.min(x1, x2)
-              const right = Math.max(x1, x2)
-              const top = Math.min(y1, y2)
-              const bottom = Math.max(y1, y2)
-
-              const inside = mx >= left && mx <= right && my >= top && my <= bottom
-              if (inside) {
-                bestIdx = i
-                bestKind = "body"
-                bestDist = 0
-                break
-              }
-
-              // 沒在內部，靠近邊也算點到
-              const dTop = distPointToSegment(mx, my, left, top, right, top)
-              const dBot = distPointToSegment(mx, my, left, bottom, right, bottom)
-              const dL = distPointToSegment(mx, my, left, top, left, bottom)
-              const dR = distPointToSegment(mx, my, right, top, right, bottom)
-              const dd = Math.min(dTop, dBot, dL, dR)
-              if (dd <= bodyThreshold && dd < bestDist) {
-                bestIdx = i
-                bestKind = "body"
-                bestDist = dd
-              }
-              continue
-            }
-
-            if (d.mode === "line") {
-              const dd = distPointToSegment(mx, my, x1, y1, x2, y2)
-              if (dd <= bodyThreshold && dd < bestDist) {
-                bestIdx = i
-                bestKind = "body"
-                bestDist = dd
-              }
-              continue
-            }
-
-            if (d.mode === "ray") {
-              const xr = w
-              let yr = y2
-              const dx = x2 - x1
-              const dy = y2 - y1
-              if (Math.abs(dx) < 1e-6) {
-                const dd = Math.abs(mx - x1)
-                if (dd <= bodyThreshold && dd < bestDist) {
-                  bestIdx = i
-                  bestKind = "body"
-                  bestDist = dd
-                }
-              } else {
-                const slope = dy / dx
-                yr = y1 + slope * (xr - x1)
-                const dd = distPointToSegment(mx, my, x1, y1, xr, yr)
-                if (dd <= bodyThreshold && dd < bestDist) {
-                  bestIdx = i
-                  bestKind = "body"
-                  bestDist = dd
-                }
-              }
-              continue
+            const slope = dy / dx
+            yr = y1 + slope * (xr - x1)
+            return {
+              kind: "ray" as const,
+              p1: { x: x1, y: y1 },
+              p2: { x: x2, y: y2 },
+              body: { x1: x1, y1: y1, x2: xr, y2: yr },
+              w,
+              h,
             }
           }
 
-          return { idx: bestIdx, kind: bestKind, dist: bestDist }
+          if (d.mode === "rect") {
+            const left = Math.min(x1, x2)
+            const right = Math.max(x1, x2)
+            const top = Math.min(y1, y2)
+            const bottom = Math.max(y1, y2)
+            return {
+              kind: "rect" as const,
+              p1: { x: x1, y: y1 },
+              p2: { x: x2, y: y2 },
+              rect: { left, right, top, bottom },
+              w,
+              h,
+            }
+          }
+
+          // line
+          return {
+            kind: "line" as const,
+            p1: { x: x1, y: y1 },
+            p2: { x: x2, y: y2 },
+            body: { x1: x1, y1: y1, x2: x2, y2: y2 },
+            w,
+            h,
+          }
+        }
+
+        const findHit = (mx: number, my: number) => {
+          const handleThresh = 10
+          const bodyThresh = 7
+
+          const checkOne = (idx: number) => {
+            const d = drawingsRef.current[idx]
+            if (!d) return null
+
+            const coords = getDrawingCoords(d)
+            if (!coords) return null
+
+            // 先判斷控制點（只要點到就當作是移動端點）
+            const p1d = Math.hypot(mx - coords.p1.x, my - coords.p1.y)
+            const p2d = Math.hypot(mx - coords.p2.x, my - coords.p2.y)
+
+            let bestPart: DragPart | null = null
+            let bestDist = Infinity
+
+            if (d.mode === "hline") {
+              if (p1d <= handleThresh) {
+                bestPart = "p1"
+                bestDist = p1d
+              }
+            } else {
+              if (p1d <= handleThresh && p1d < bestDist) {
+                bestPart = "p1"
+                bestDist = p1d
+              }
+              if (p2d <= handleThresh && p2d < bestDist) {
+                bestPart = "p2"
+                bestDist = p2d
+              }
+            }
+
+            if (bestPart) {
+              return { idx, part: bestPart, dist: bestDist }
+            }
+
+            // 再判斷物件本體（拖曳＝整個一起動）
+            if (d.mode === "rect" && coords.kind === "rect" && coords.rect) {
+              const { left, right, top, bottom } = coords.rect
+              if (mx >= left && mx <= right && my >= top && my <= bottom) {
+                return { idx, part: "body" as DragPart, dist: 0 }
+              }
+              const d1 = distPointToSegment(mx, my, left, top, right, top)
+              const d2 = distPointToSegment(mx, my, right, top, right, bottom)
+              const d3 = distPointToSegment(mx, my, right, bottom, left, bottom)
+              const d4 = distPointToSegment(mx, my, left, bottom, left, top)
+              const dd = Math.min(d1, d2, d3, d4)
+              if (dd <= bodyThresh) return { idx, part: "body" as DragPart, dist: dd }
+              return null
+            }
+
+            if ((coords as any).body) {
+              const b = (coords as any).body
+              const dd = distPointToSegment(mx, my, b.x1, b.y1, b.x2, b.y2)
+              if (dd <= bodyThresh) return { idx, part: "body" as DragPart, dist: dd }
+            }
+
+            // hline 的 body：以 y 距離判斷
+            if (d.mode === "hline" && coords.kind === "hline") {
+              const dd = Math.abs(my - coords.p1.y)
+              if (dd <= bodyThresh) return { idx, part: "body" as DragPart, dist: dd }
+            }
+
+            return null
+          }
+
+          // 先優先檢查已選取那一筆（提升可操作性）
+          const sel = selectedIdxRef.current
+          if (sel >= 0 && sel < drawingsRef.current.length) {
+            const rSel = checkOne(sel)
+            if (rSel) return rSel
+          }
+
+          // 否則找整體最近的一筆
+          let best: { idx: number; part: DragPart; dist: number } | null = null
+          for (let i = 0; i < drawingsRef.current.length; i++) {
+            const r = checkOne(i)
+            if (!r) continue
+            if (!best || r.dist < best.dist) best = r
+          }
+          return best
         }
 
         domMouseDown = (e: MouseEvent) => {
           if (drawModeRef.current !== "mouse") return
           if (!series || !chart0) return
-          if (drawingsRef.current.length === 0) return
 
           const rect = container.getBoundingClientRect()
           const mx = e.clientX - rect.left
           const my = e.clientY - rect.top
 
-          const hit = findHit(mx, my)
-          if (hit.idx < 0) return
-
-          // ✅ 端點：進入拖曳；本體：直接刪除
-          if (hit.kind === "body") {
-            try {
-              e.preventDefault()
-              e.stopPropagation()
-              ;(e as any).stopImmediatePropagation?.()
-            } catch (err) {}
-
-            drawingsRef.current.splice(hit.idx, 1)
+          // 沒有任何圖，就清掉選取
+          if (drawingsRef.current.length === 0) {
+            selectedIdxRef.current = -1
             renderDrawings()
             return
           }
+
+          const hit = findHit(mx, my)
+          if (!hit) {
+            // 點到空白：取消選取
+            selectedIdxRef.current = -1
+            renderDrawings()
+            container.style.cursor = ""
+            return
+          }
+
+          // ✅ 點一下：選取該物件並顯示控制點
+          selectedIdxRef.current = hit.idx
+          renderDrawings()
 
           try {
             e.preventDefault()
@@ -1608,8 +1650,28 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             ;(e as any).stopImmediatePropagation?.()
           } catch (err) {}
 
-          dragRef.current = { idx: hit.idx, point: hit.kind === "p" ? "p" : hit.kind }
-          container.style.cursor = "grabbing"
+          const ts = chart0.timeScale()
+          const logical = ts.coordinateToLogical(mx as any)
+          const price = series.coordinateToPrice(my as any) as any
+          if (logical == null || price == null || !Number.isFinite(price)) return
+
+          const d = drawingsRef.current[hit.idx]
+          const orig: Drawing = { ...d }
+
+          const idx1 = d.mode === "hline" ? -1 : timeToIndex(d.t1)
+          const idx2 = d.mode === "hline" ? -1 : timeToIndex(d.t2)
+
+          dragRef.current = {
+            idx: hit.idx,
+            orig,
+            startLogical: Number(logical),
+            startPrice: Number(price),
+            origIdx1: idx1,
+            origIdx2: idx2,
+            part: hit.part,
+          }
+
+          container.style.cursor = hit.part === "body" ? "grabbing" : "grabbing"
         }
 
         domMouseMove = (e: MouseEvent) => {
@@ -1620,15 +1682,15 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const mx = e.clientX - rect.left
           const my = e.clientY - rect.top
 
-          // 未拖曳：更新游標提示
+          // 沒在拖曳：只改 cursor 提示
           if (!dragRef.current) {
-            const hit = findHit(mx, my)
-            if (hit.idx >= 0) {
-              if (hit.kind === "body") container.style.cursor = "pointer" // 點到就刪
-              else container.style.cursor = "grab" // 端點可拖
-            } else {
+            const hit = drawingsRef.current.length > 0 ? findHit(mx, my) : null
+            if (!hit) {
               container.style.cursor = ""
+              return
             }
+            // 控制點：提示可拖曳；本體：grab
+            container.style.cursor = hit.part === "body" ? "grab" : "pointer"
             return
           }
 
@@ -1644,35 +1706,66 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (logicalNow == null || priceNow == null || !Number.isFinite(priceNow)) return
 
           const st = dragRef.current
-          const d = drawingsRef.current[st.idx]
-          if (!d) return
+          const orig = st.orig
+          const updated: Drawing = { ...drawingsRef.current[st.idx] }
 
-          // hline：拖端點只改價格
-          if (d.mode === "hline" && st.point === "p") {
-            d.p1 = Number(priceNow)
-            d.p2 = d.p1
-            drawingsRef.current[st.idx] = { ...d }
+          // ✅ 端點拖曳：直接改第一點 / 第二點（水平線只有一點）
+          if (st.part === "p1" || st.part === "p2") {
+            const rawTimes = primaryTimesRawRef.current
+            const hasTime = rawTimes && rawTimes.length > 0
+
+            const idxNow = hasTime ? clampIndex(Math.round(Number(logicalNow))) : -1
+            const timeNow = hasTime && idxNow >= 0 ? rawTimes[idxNow] : orig.t1
+
+            if (orig.mode === "hline") {
+              updated.p1 = Number(priceNow)
+              updated.p2 = updated.p1
+              drawingsRef.current[st.idx] = updated
+              renderDrawings()
+              return
+            }
+
+            if (st.part === "p1") {
+              if (hasTime) updated.t1 = timeNow
+              updated.p1 = Number(priceNow)
+              drawingsRef.current[st.idx] = updated
+              renderDrawings()
+              return
+            }
+
+            // p2
+            if (hasTime) updated.t2 = timeNow
+            updated.p2 = Number(priceNow)
+            drawingsRef.current[st.idx] = updated
             renderDrawings()
             return
           }
 
-          // 其他：拖端點改 time + price
-          const rawTimes = primaryTimesRawRef.current
-          if (!rawTimes || rawTimes.length === 0) return
+          // ✅ 拖曳本體：整個物件一起動（沿用原本 deltaBars + deltaPrice）
+          const deltaBars = Math.round(Number(logicalNow) - st.startLogical)
+          const deltaPrice = Number(priceNow) - st.startPrice
 
-          const idxNew = clampIndex(Math.round(Number(logicalNow)))
-          const tNew = rawTimes[idxNew]
-          const pNew = Number(priceNow)
-
-          if (st.point === "p1") {
-            d.t1 = tNew
-            d.p1 = pNew
-          } else if (st.point === "p2") {
-            d.t2 = tNew
-            d.p2 = pNew
+          if (orig.mode === "hline") {
+            updated.p1 = orig.p1 + deltaPrice
+            updated.p2 = updated.p1
+            drawingsRef.current[st.idx] = updated
+            renderDrawings()
+            return
           }
 
-          drawingsRef.current[st.idx] = { ...d }
+          const rawTimes = primaryTimesRawRef.current
+          if (!rawTimes || rawTimes.length === 0) return
+          if (st.origIdx1 < 0 || st.origIdx2 < 0) return
+
+          const ni1 = clampIndex(st.origIdx1 + deltaBars)
+          const ni2 = clampIndex(st.origIdx2 + deltaBars)
+
+          updated.t1 = rawTimes[ni1]
+          updated.t2 = rawTimes[ni2]
+          updated.p1 = orig.p1 + deltaPrice
+          updated.p2 = orig.p2 + deltaPrice
+
+          drawingsRef.current[st.idx] = updated
           renderDrawings()
         }
 
