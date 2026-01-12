@@ -404,12 +404,17 @@ type Drawing = {
   p2: number
   color: string
   width: number
+  // ✅ 允許超出 K 棒資料範圍：用 logical 位置渲染 (可落在資料外)
+  l1?: number
+  l2?: number
 }
 
 type PendingPoint = {
   mode: DrawMode
   t: any
   p: number
+  // ✅ 用 logical 記錄第一點位置，避免 param.time 在資料外為 null
+  l: number
 }
 
 type DragPart = "body" | "p1" | "p2"
@@ -419,8 +424,8 @@ type DragState = {
   orig: Drawing
   startLogical: number
   startPrice: number
-  origIdx1: number
-  origIdx2: number
+  origL1: number
+  origL2: number
   part: DragPart
 }
 
@@ -488,12 +493,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     const key = Math.round(n)
     const idx = primaryIndexMapRef.current.get(key)
     return typeof idx === "number" ? idx : -1
-  }
-
-  const clampIndex = (i: number) => {
-    const n = primaryTimesRawRef.current.length
-    if (n <= 0) return 0
-    return Math.max(0, Math.min(n - 1, i))
   }
 
   const renderDrawings = () => {
@@ -729,8 +728,11 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
-      const x1c = ts.timeToCoordinate(d.t1)
-      const x2c = ts.timeToCoordinate(d.t2)
+      // ✅ 允許超出資料範圍：優先用 logicalToCoordinate (d.l1/d.l2)，否則退回 timeToCoordinate
+      const x1c =
+        typeof d.l1 === "number" && Number.isFinite(d.l1) ? ts.logicalToCoordinate(d.l1 as any) : ts.timeToCoordinate(d.t1)
+      const x2c =
+        typeof d.l2 === "number" && Number.isFinite(d.l2) ? ts.logicalToCoordinate(d.l2 as any) : ts.timeToCoordinate(d.t2)
       const y1c = series.priceToCoordinate(d.p1)
       const y2c = series.priceToCoordinate(d.p2)
 
@@ -1269,7 +1271,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const c0 = chartInstances.current[0]
       if (c0) {
         const handler = (param: MouseEventParams) => {
-          if (!param || !param.time || !param.point) return
+          if (!param || !param.point) return
           if (!pendingPointRef.current) return
 
           const series = primarySeriesRef.current
@@ -1279,20 +1281,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const pp = pendingPointRef.current
           const modeNow = pp.mode
 
-          // hline：因為改成「點一下就實體」，這裡通常不會進來
-          if (modeNow === "hline") {
-            previewRef.current = {
-              mode: "hline",
-              t1: pp.t,
-              p1: pp.p,
-              t2: pp.t,
-              p2: pp.p,
-              color: drawColorRef.current,
-              width: drawWidthRef.current,
-            }
-            renderDrawings()
-            return
-          }
+          // ✅ 用 point.x 轉 logical（即使超出資料範圍也有值）
+          const logical2 = p0.chart.timeScale().coordinateToLogical((param.point as any).x)
+          if (logical2 == null) return
 
           let price: number | null = null
           try {
@@ -1302,15 +1293,33 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           }
           if (price == null || !Number.isFinite(price)) return
 
+          if (modeNow === "hline") {
+            previewRef.current = {
+              mode: "hline",
+              t1: pp.t,
+              p1: pp.p,
+              t2: pp.t,
+              p2: pp.p,
+              color: drawColorRef.current,
+              width: drawWidthRef.current,
+              l1: pp.l,
+              l2: pp.l,
+            }
+            renderDrawings()
+            return
+          }
+
           if (modeNow === "rect") {
             previewRef.current = {
               mode: "rect",
               t1: pp.t,
               p1: pp.p,
-              t2: param.time,
+              t2: (param as any).time ?? null,
               p2: price,
               color: drawColorRef.current,
               width: drawWidthRef.current,
+              l1: pp.l,
+              l2: Number(logical2),
             }
             renderDrawings()
             return
@@ -1320,10 +1329,12 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             mode: modeNow === "ray" ? "ray" : "line",
             t1: pp.t,
             p1: pp.p,
-            t2: param.time,
+            t2: (param as any).time ?? null,
             p2: price,
             color: drawColorRef.current,
             width: drawWidthRef.current,
+            l1: pp.l,
+            l2: Number(logical2),
           }
           renderDrawings()
         }
@@ -1340,10 +1351,15 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       if (c0) {
         const handler = (param: MouseEventParams) => {
           if (drawModeRef.current === "mouse") return
-          if (!param || !param.time || !param.point) return
+          if (!param || !param.point) return
 
+          const p0 = panes.current[0]
           const series = primarySeriesRef.current
-          if (!series) return
+          if (!series || !p0 || !p0.chart) return
+
+          // ✅ 用 point.x 轉 logical：支援超過 K 棒資料範圍
+          const logical = p0.chart.timeScale().coordinateToLogical((param.point as any).x)
+          if (logical == null) return
 
           let price: number | null = null
           try {
@@ -1353,7 +1369,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           }
           if (price == null || !Number.isFinite(price)) return
 
-          const t = param.time
+          const t = (param as any).time ?? null
           const mode = drawModeRef.current
 
           // ✅ 水平線：點一下直接實體
@@ -1369,6 +1385,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
               p2: price,
               color: drawColorRef.current,
               width: drawWidthRef.current,
+              l1: Number(logical),
+              l2: Number(logical),
             }
 
             drawingsRef.current.push(newDrawing)
@@ -1378,7 +1396,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
           // 第一次點
           if (!pendingPointRef.current) {
-            pendingPointRef.current = { mode, t, p: price }
+            pendingPointRef.current = { mode, t, p: price, l: Number(logical) }
 
             previewRef.current = {
               mode: mode === "ray" ? "ray" : mode === "rect" ? "rect" : "line",
@@ -1388,6 +1406,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
               p2: price,
               color: drawColorRef.current,
               width: drawWidthRef.current,
+              l1: Number(logical),
+              l2: Number(logical),
             }
 
             renderDrawings()
@@ -1408,6 +1428,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             p2: price,
             color: drawColorRef.current,
             width: drawWidthRef.current,
+            l1: p1.l,
+            l2: Number(logical),
           }
 
           drawingsRef.current.push(newDrawing)
@@ -1466,8 +1488,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             }
           }
 
-          const x1c = ts.timeToCoordinate(d.t1)
-          const x2c = ts.timeToCoordinate(d.t2)
+          const x1c =
+            typeof d.l1 === "number" && Number.isFinite(d.l1) ? ts.logicalToCoordinate(d.l1 as any) : ts.timeToCoordinate(d.t1)
+          const x2c =
+            typeof d.l2 === "number" && Number.isFinite(d.l2) ? ts.logicalToCoordinate(d.l2 as any) : ts.timeToCoordinate(d.t2)
           const y1c = series.priceToCoordinate(d.p1)
           const y2c = series.priceToCoordinate(d.p2)
           if (x1c == null || x2c == null || y1c == null || y2c == null) return null
@@ -1658,16 +1682,19 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const d = drawingsRef.current[hit.idx]
           const orig: Drawing = { ...d }
 
-          const idx1 = d.mode === "hline" ? -1 : timeToIndex(d.t1)
-          const idx2 = d.mode === "hline" ? -1 : timeToIndex(d.t2)
+          // ✅ 優先用 l1/l2（允許資料外）；沒有才退回用 time index
+          const ol1 =
+            typeof d.l1 === "number" && Number.isFinite(d.l1) ? Number(d.l1) : timeToIndex(d.t1)
+          const ol2 =
+            typeof d.l2 === "number" && Number.isFinite(d.l2) ? Number(d.l2) : timeToIndex(d.t2)
 
           dragRef.current = {
             idx: hit.idx,
             orig,
             startLogical: Number(logical),
             startPrice: Number(price),
-            origIdx1: idx1,
-            origIdx2: idx2,
+            origL1: ol1,
+            origL2: ol2,
             part: hit.part,
           }
 
@@ -1711,57 +1738,48 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
           // ✅ 端點拖曳：直接改第一點 / 第二點（水平線只有一點）
           if (st.part === "p1" || st.part === "p2") {
-            const rawTimes = primaryTimesRawRef.current
-            const hasTime = rawTimes && rawTimes.length > 0
-
-            const idxNow = hasTime ? clampIndex(Math.round(Number(logicalNow))) : -1
-            const timeNow = hasTime && idxNow >= 0 ? rawTimes[idxNow] : orig.t1
-
             if (orig.mode === "hline") {
               updated.p1 = Number(priceNow)
               updated.p2 = updated.p1
+              updated.l1 = Number(logicalNow)
+              updated.l2 = Number(logicalNow)
               drawingsRef.current[st.idx] = updated
               renderDrawings()
               return
             }
 
             if (st.part === "p1") {
-              if (hasTime) updated.t1 = timeNow
               updated.p1 = Number(priceNow)
+              updated.l1 = Number(logicalNow)
               drawingsRef.current[st.idx] = updated
               renderDrawings()
               return
             }
 
             // p2
-            if (hasTime) updated.t2 = timeNow
             updated.p2 = Number(priceNow)
+            updated.l2 = Number(logicalNow)
             drawingsRef.current[st.idx] = updated
             renderDrawings()
             return
           }
 
-          // ✅ 拖曳本體：整個物件一起動（沿用原本 deltaBars + deltaPrice）
-          const deltaBars = Math.round(Number(logicalNow) - st.startLogical)
+          // ✅ 拖曳本體：整個物件一起動（沿用 deltaLogical + deltaPrice）
+          const deltaLogical = Number(logicalNow) - st.startLogical
           const deltaPrice = Number(priceNow) - st.startPrice
 
           if (orig.mode === "hline") {
             updated.p1 = orig.p1 + deltaPrice
             updated.p2 = updated.p1
+            updated.l1 = st.origL1 + deltaLogical
+            updated.l2 = st.origL2 + deltaLogical
             drawingsRef.current[st.idx] = updated
             renderDrawings()
             return
           }
 
-          const rawTimes = primaryTimesRawRef.current
-          if (!rawTimes || rawTimes.length === 0) return
-          if (st.origIdx1 < 0 || st.origIdx2 < 0) return
-
-          const ni1 = clampIndex(st.origIdx1 + deltaBars)
-          const ni2 = clampIndex(st.origIdx2 + deltaBars)
-
-          updated.t1 = rawTimes[ni1]
-          updated.t2 = rawTimes[ni2]
+          updated.l1 = st.origL1 + deltaLogical
+          updated.l2 = st.origL2 + deltaLogical
           updated.p1 = orig.p1 + deltaPrice
           updated.p2 = orig.p2 + deltaPrice
 
