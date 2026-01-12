@@ -576,8 +576,26 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
               const maxV = Math.max(...acc)
               if (maxV > 0) {
                 // ✅ 修正：分價圖柱狀更長、更明顯
-                const maxBarW = Math.min(240, w * 0.38)
+                const maxBarW = Math.min(420, w * 0.62)
                 const xRight = w - 6
+
+                // ✅ 最大量 / 第二大量：找 top2
+                let maxIdx = -1
+                let secondIdx = -1
+                let maxVal = -Infinity
+                let secondVal = -Infinity
+                for (let b = 0; b < bins; b++) {
+                  const v = acc[b]
+                  if (v > maxVal) {
+                    secondVal = maxVal
+                    secondIdx = maxIdx
+                    maxVal = v
+                    maxIdx = b
+                  } else if (v > secondVal) {
+                    secondVal = v
+                    secondIdx = b
+                  }
+                }
 
                 for (let b = 0; b < bins; b++) {
                   const v = acc[b]
@@ -601,13 +619,23 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                   const barW = (v / maxV) * maxBarW
                   const xLeft = xRight - barW
 
+                  let fill = "rgba(33, 150, 243, 0.18)"
+                  let stroke = "rgba(33, 150, 243, 0.35)"
+                  if (b === maxIdx) {
+                    fill = "rgba(244, 67, 54, 0.22)" // ✅ 最大量：紅色
+                    stroke = "rgba(244, 67, 54, 0.60)"
+                  } else if (b === secondIdx) {
+                    fill = "rgba(255, 152, 0, 0.22)" // ✅ 第二大量：橘色
+                    stroke = "rgba(255, 152, 0, 0.60)"
+                  }
+
                   const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect")
                   rect.setAttribute("x", String(xLeft))
                   rect.setAttribute("y", String(yTop))
                   rect.setAttribute("width", String(barW))
                   rect.setAttribute("height", String(height))
-                  rect.setAttribute("fill", "rgba(33, 150, 243, 0.18)")
-                  rect.setAttribute("stroke", "rgba(33, 150, 243, 0.35)")
+                  rect.setAttribute("fill", fill)
+                  rect.setAttribute("stroke", stroke)
                   rect.setAttribute("stroke-width", "1")
                   rect.setAttribute("vector-effect", "non-scaling-stroke")
                   svg.appendChild(rect)
@@ -1624,7 +1652,10 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
         )} 收:${toFixedMaybe(data.close)}  漲跌幅:${pctStr}`
       } else if (data.value !== undefined) {
         // Line / Histogram
-        valStr = `數值:${toFixedMaybe(data.value)}`
+        // ✅ 修正：均線(如 MA5) 只顯示數字，不要「數值:」
+        const title = (s.title || "").trim()
+        const isMA = /^MA\d+/i.test(title)
+        valStr = isMA ? toFixedMaybe(data.value) : `數值:${toFixedMaybe(data.value)}`
         if (data.color) color = data.color
         else if (opts.color) color = opts.color
         else if (opts.lineColor) color = opts.lineColor
