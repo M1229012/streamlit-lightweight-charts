@@ -1882,6 +1882,7 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
   const intFmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 })
   const floatFmt = (v: any, digits = 2) => toFixedMaybe(v, digits)
 
+  // ✅ 修正：十字查價資訊改成中文
   let html = `<div style="font-weight:bold;margin-bottom:4px;">日期：${timeStr}</div>`
 
   pane.series.forEach((s) => {
@@ -1889,25 +1890,35 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
       const data = s.api.dataByIndex(logical) as any
       if (!data) return
 
-      const opts = s.options as any
-      const rawTitle = (s.title || "").trim()           // ✅ 一律 trim
-      const titleUpper = rawTitle.toUpperCase()
-
-      // ✅ 類型判斷
-      const isMA = /^MA\d+$/i.test(rawTitle)
-      const isVolumeOrShares =
-        /成交量|VOLUME|量|張|買賣|融資|融券|家數/.test(rawTitle)
-
-      const isKDorRSI = /^(K|D|RSI)$/i.test(rawTitle)   // KD/RSI 顯示單位用
-
-      // ✅ 顯示用標題：補 (張)
-      let displayTitle = rawTitle
-      if (isVolumeOrShares && !/張/.test(displayTitle)) {
-        displayTitle = `${displayTitle} (張)`
-      }
-
       let valStr = "--"
       let color = "#fff"
+      const opts = s.options as any
+
+      const rawTitle = (s.title || "").trim()
+      const isKDorRSI = /^(K|D|RSI)$/i.test(rawTitle)
+
+      // ✅ 家數相關（單位要「家」）
+      const isHouseCount = /家數/.test(rawTitle)
+
+      // ✅ 成交量/張數類（但排除家數）
+      const isVolumeOrShares = !isHouseCount && /成交量|VOLUME|量|張|買賣|融資|融券/.test(rawTitle)
+
+      // ✅ 整數類（成交量/張數/家數）
+      const isIntegerType = isHouseCount || isVolumeOrShares
+
+      // ✅ 百分比類：把 % 從 title 移到數字後面（但 KD/RSI 不要 %）
+      const wantsPercentAfterValue = /大戶|散戶|%|％/.test(rawTitle) && !isKDorRSI
+
+      // ✅ 顯示用標題：去掉 %，並補正單位
+      let displayTitle = rawTitle.replace(/[%％]/g, "").trim()
+
+      if (isHouseCount) {
+        // 若原本寫成 (張) 直接改成 (家)
+        displayTitle = displayTitle.replace(/\(張\)/g, "(家)")
+        if (!/\(家\)/.test(displayTitle)) displayTitle = `${displayTitle} (家)`
+      } else if (isVolumeOrShares) {
+        if (!/\(張\)/.test(displayTitle) && !/張/.test(displayTitle)) displayTitle = `${displayTitle} (張)`
+      }
 
       if (data.close !== undefined) {
         // Candlestick
@@ -1928,23 +1939,20 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
         }
         const pctStr = `${pct >= 0 ? "+" : ""}${floatFmt(pct, 2)}%`
 
-        valStr =
-          `開:${floatFmt(data.open)} 高:${floatFmt(data.high)} 低:${floatFmt(data.low)} ` +
-          `收:${floatFmt(data.close)}  漲跌幅:${pctStr}`
+        valStr = `開:${floatFmt(data.open)} 高:${floatFmt(data.high)} 低:${floatFmt(data.low)} 收:${floatFmt(
+          data.close
+        )}  漲跌幅:${pctStr}`
       } else if (data.value !== undefined) {
         // Line / Histogram
-
-        if (isVolumeOrShares) {
-          // ✅ 成交量/張數：整數 + 千分位
+        if (isIntegerType) {
           const v = typeof data.value === "number" ? Math.round(data.value) : 0
-          valStr = intFmt.format(v)
+          valStr = intFmt.format(v) // ✅ 無小數 + 千分位
         } else {
-          // ✅ 均線/指標：兩位小數
           valStr = floatFmt(data.value, 2)
         }
 
-        // ✅ KD/RSI 補單位（你如果不想要 %，刪掉這段即可）
-        if (isKDorRSI && valStr !== "--") {
+        // ✅ 百分比符號放數字後面（大戶/散戶 等），KD/RSI 不加 %
+        if (wantsPercentAfterValue && valStr !== "--") {
           valStr = `${valStr}%`
         }
 
@@ -1953,15 +1961,12 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
         else if (opts.lineColor) color = opts.lineColor
       }
 
-      // ✅ MA 想更緊一點就用小 gap（不要靠字串空白）
-      const gap = isMA ? 6 : 12
-
-      html += `
-        <div style="display:flex;align-items:center;justify-content:flex-start;gap:${gap}px;color:${color}">
-          <span>${displayTitle}</span>
-          <span style="font-family:monospace">${valStr}</span>
-        </div>
-      `
+      // ✅ 修正排版：左對齊，gap 控制間距
+      const gap = /^MA\d+$/i.test(displayTitle) ? 6 : 12
+      html += `<div style="display:flex;align-items:center;justify-content:flex-start;gap:${gap}px;color:${color}">
+                <span>${displayTitle}</span>
+                <span style="font-family:monospace">${valStr}</span>
+              </div>`
     } catch (e) {}
   })
 
