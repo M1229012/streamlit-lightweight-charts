@@ -1878,7 +1878,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   )
 }
 
-// Helper for tooltip content generation (Keep logic same as before)
+// Helper for tooltip content generation (Refactored logic)
 const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => {
   // ✅ 修正：十字查價資訊改成中文
   let html = `<div style="font-weight:bold;margin-bottom:4px;">日期：${timeStr}</div>`
@@ -1916,16 +1916,27 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
         )} 收:${toFixedMaybe(data.close)}  漲跌幅:${pctStr}`
       } else if (data.value !== undefined) {
         // Line / Histogram
-        // ✅ 修正：均線(如 MA5) 只顯示數字，不要「數值:」
         const title = (s.title || "").trim()
-        const isMA = /^MA\d+/i.test(title)
-        valStr = isMA ? toFixedMaybe(data.value) : `數值:${toFixedMaybe(data.value)}`
+
+        // 判斷是否為整數類型 (成交量、張數相關)
+        const isIntegerType = /張|成交量|買賣|融資|融券|家數/.test(title)
+
+        if (isIntegerType) {
+          // 強制整數 + 千分位
+          const val = typeof data.value === "number" ? Math.round(data.value) : 0
+          valStr = val.toLocaleString("en-US")
+        } else {
+          // 其他 (均線、KD、MACD、RSI...) 保留兩位小數
+          valStr = toFixedMaybe(data.value, 2)
+        }
+
         if (data.color) color = data.color
         else if (opts.color) color = opts.color
         else if (opts.lineColor) color = opts.lineColor
       }
 
-      html += `<div style="display:flex;justify-content:space-between;gap:10px;color:${color}">
+      // ✅ 修正排版：左對齊，gap 控制間距 (MA5  83.70)
+      html += `<div style="display:flex;align-items:center;justify-content:flex-start;gap:12px;color:${color}">
                 <span>${s.title}</span>
                 <span style="font-family:monospace">${valStr}</span>
             </div>`
