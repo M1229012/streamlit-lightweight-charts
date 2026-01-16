@@ -1878,25 +1878,42 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   )
 }
 
-// Helper for tooltip content generation (Refactored logic)
 const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => {
-  // ✅ 修正：十字查價資訊改成中文
+  const intFmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 })
+  const floatFmt = (v: any, digits = 2) => toFixedMaybe(v, digits)
+
   let html = `<div style="font-weight:bold;margin-bottom:4px;">日期：${timeStr}</div>`
+
   pane.series.forEach((s) => {
     try {
       const data = s.api.dataByIndex(logical) as any
       if (!data) return
 
+      const opts = s.options as any
+      const rawTitle = (s.title || "").trim()           // ✅ 一律 trim
+      const titleUpper = rawTitle.toUpperCase()
+
+      // ✅ 類型判斷
+      const isMA = /^MA\d+$/i.test(rawTitle)
+      const isVolumeOrShares =
+        /成交量|VOLUME|量|張|買賣|融資|融券|家數/.test(rawTitle)
+
+      const isKDorRSI = /^(K|D|RSI)$/i.test(rawTitle)   // KD/RSI 顯示單位用
+
+      // ✅ 顯示用標題：補 (張)
+      let displayTitle = rawTitle
+      if (isVolumeOrShares && !/張/.test(displayTitle)) {
+        displayTitle = `${displayTitle} (張)`
+      }
+
       let valStr = "--"
       let color = "#fff"
-      const opts = s.options as any
 
       if (data.close !== undefined) {
         // Candlestick
         const isUp = data.close >= data.open
         color = isUp ? opts.upColor : opts.downColor
 
-        // ✅ 新增：顯示該棒漲跌幅（以「前一根收盤價」為基準，若不存在則用開盤價）
         let base = data.open
         let prevClose: any = null
         try {
@@ -1909,25 +1926,26 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
         if (typeof base === "number" && Number.isFinite(base) && base !== 0) {
           pct = ((data.close - base) / base) * 100
         }
-        const pctStr = `${pct >= 0 ? "+" : ""}${toFixedMaybe(pct, 2)}%`
+        const pctStr = `${pct >= 0 ? "+" : ""}${floatFmt(pct, 2)}%`
 
-        valStr = `開:${toFixedMaybe(data.open)} 高:${toFixedMaybe(data.high)} 低:${toFixedMaybe(
-          data.low
-        )} 收:${toFixedMaybe(data.close)}  漲跌幅:${pctStr}`
+        valStr =
+          `開:${floatFmt(data.open)} 高:${floatFmt(data.high)} 低:${floatFmt(data.low)} ` +
+          `收:${floatFmt(data.close)}  漲跌幅:${pctStr}`
       } else if (data.value !== undefined) {
         // Line / Histogram
-        const title = (s.title || "").trim()
 
-        // 判斷是否為整數類型 (成交量、張數相關)
-        const isIntegerType = /張|成交量|買賣|融資|融券|家數/.test(title)
-
-        if (isIntegerType) {
-          // 強制整數 + 千分位
-          const val = typeof data.value === "number" ? Math.round(data.value) : 0
-          valStr = val.toLocaleString("en-US")
+        if (isVolumeOrShares) {
+          // ✅ 成交量/張數：整數 + 千分位
+          const v = typeof data.value === "number" ? Math.round(data.value) : 0
+          valStr = intFmt.format(v)
         } else {
-          // 其他 (均線、KD、MACD、RSI...) 保留兩位小數
-          valStr = toFixedMaybe(data.value, 2)
+          // ✅ 均線/指標：兩位小數
+          valStr = floatFmt(data.value, 2)
+        }
+
+        // ✅ KD/RSI 補單位（你如果不想要 %，刪掉這段即可）
+        if (isKDorRSI && valStr !== "--") {
+          valStr = `${valStr}%`
         }
 
         if (data.color) color = data.color
@@ -1935,15 +1953,21 @@ const updatePaneTooltip = (pane: PaneMeta, timeStr: string, logical: number) => 
         else if (opts.lineColor) color = opts.lineColor
       }
 
-      // ✅ 修正排版：左對齊，gap 控制間距 (MA5  83.70)
-      html += `<div style="display:flex;align-items:center;justify-content:flex-start;gap:12px;color:${color}">
-                <span>${s.title}</span>
-                <span style="font-family:monospace">${valStr}</span>
-            </div>`
+      // ✅ MA 想更緊一點就用小 gap（不要靠字串空白）
+      const gap = isMA ? 6 : 12
+
+      html += `
+        <div style="display:flex;align-items:center;justify-content:flex-start;gap:${gap}px;color:${color}">
+          <span>${displayTitle}</span>
+          <span style="font-family:monospace">${valStr}</span>
+        </div>
+      `
     } catch (e) {}
   })
+
   pane.tooltip.innerHTML = html
   pane.tooltip.style.display = "block"
 }
+
 
 export default LightweightChartsMultiplePanes
