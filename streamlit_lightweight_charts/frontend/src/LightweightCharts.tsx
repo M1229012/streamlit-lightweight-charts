@@ -125,10 +125,9 @@ function ensureGlobalMask(host: HTMLDivElement) {
 }
 
 // ====================================================================
-// 2.1 畫線工具 DOM - [Icons Updated]
+// 2.1 畫線工具 DOM (SVG Icons & Draggable)
 // ====================================================================
 
-// ✅ 新增 fib (斐波那契) 與 brush (筆刷)，並更新 hline 為單條線
 type DrawMode = "mouse" | "line" | "ray" | "hline" | "rect" | "fib" | "brush"
 
 const ICONS = {
@@ -136,12 +135,9 @@ const ICONS = {
   mouse: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"></path><path d="M13 13l6 6"></path></svg>`,
   line: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="20" x2="20" y2="4"></line><circle cx="4" cy="20" r="2" fill="currentColor"></circle><circle cx="20" cy="4" r="2" fill="currentColor"></circle></svg>`,
   ray: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="20" x2="20" y2="4"></line><path d="M16 4h4v4"></path><circle cx="4" cy="20" r="2" fill="currentColor"></circle></svg>`,
-  // ✅ 修改：hline 改為單一橫線圖示
   hline: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="12" x2="22" y2="12"></line><circle cx="12" cy="12" r="2" fill="currentColor"></circle></svg>`,
   rect: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16"></rect><circle cx="4" cy="4" r="2" fill="currentColor"></circle><circle cx="20" cy="20" r="2" fill="currentColor"></circle></svg>`,
-  // ✅ 新增：斐波那契
   fib: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="4" x2="20" y2="4"></line><line x1="4" y1="12" x2="20" y2="12" stroke-dasharray="2,2"></line><line x1="4" y1="20" x2="20" y2="20"></line><line x1="12" y1="4" x2="12" y2="20" stroke-width="1" opacity="0.5"></line></svg>`,
-  // ✅ 新增：筆刷
   brush: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 12c2 0 3-1 3-3s-1-3-3-3-4 1-6 3l-7 7c-1 1-1 3 0 4s3 1 4 0l7-7"></path></svg>`,
 }
 
@@ -270,7 +266,6 @@ function ensureDrawToolbar(
     toolbar.appendChild(mkBtn(ICONS.line, "line", "直線"))
     toolbar.appendChild(mkBtn(ICONS.ray, "ray", "延長線"))
     toolbar.appendChild(mkBtn(ICONS.hline, "hline", "水平線"))
-    // ✅ 新增按鈕
     toolbar.appendChild(mkBtn(ICONS.fib, "fib", "斐波那契回撤"))
     toolbar.appendChild(mkBtn(ICONS.brush, "brush", "筆刷"))
     toolbar.appendChild(mkBtn(ICONS.rect, "rect", "方框"))
@@ -435,7 +430,6 @@ type PaneMeta = {
   series: SeriesMeta[]
 }
 
-// ✅ 新增模式
 type DrawingMode = "line" | "ray" | "hline" | "rect" | "fib" | "brush"
 
 type Drawing = {
@@ -448,7 +442,6 @@ type Drawing = {
   width: number
   l1?: number
   l2?: number
-  // ✅ 筆刷資料
   points?: { l: number; p: number }[]
 }
 
@@ -503,7 +496,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   const dragRef = useRef<DragState | null>(null)
   const selectedIdxRef = useRef<number>(-1)
 
-  // ✅ 筆刷正在畫
   const isBrushDrawingRef = useRef<boolean>(false)
 
   const chartElRefs = useMemo(() => {
@@ -543,12 +535,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
     const ts = p0.chart.timeScale()
 
-    // ... (VP Logic skipped for brevity, kept same as before) ...
-    // =========================================================
-    // 分價圖邏輯 (省略以節省長度，請保留原代碼)
-    // =========================================================
     if (vpEnabledRef.current) {
-        // ... (保持原樣) ...
         try {
             const range = ts.getVisibleLogicalRange?.()
             const candles = primaryCandleDataRef.current || []
@@ -721,9 +708,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const width = d.width
       const showPoints = drawModeRef.current === "mouse" && (isSelected || dashed)
 
-      // =================================================
-      // ✅ 1. 筆刷 (Brush)
-      // =================================================
+      // ✅ 1. 筆刷 (Brush) - 嚴格過濾無效點
       if (d.mode === "brush" && d.points && d.points.length > 0) {
         const pts: string[] = []
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
@@ -731,14 +716,19 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         d.points.forEach(pt => {
           const xc = ts.logicalToCoordinate(pt.l as any)
           const yc = series.priceToCoordinate(pt.p)
+          
+          // ⚠️ 關鍵修正：檢查是否為 null 或 NaN
           if (xc != null && yc != null) {
             const x = Number(xc)
             const y = Number(yc)
-            pts.push(`${x},${y}`)
-            if (x < minX) minX = x
-            if (x > maxX) maxX = x
-            if (y < minY) minY = y
-            if (y > maxY) maxY = y
+            
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+                pts.push(`${x},${y}`)
+                if (x < minX) minX = x
+                if (x > maxX) maxX = x
+                if (y < minY) minY = y
+                if (y > maxY) maxY = y
+            }
           }
         })
 
@@ -754,7 +744,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           if (dashed) poly.setAttribute("opacity", "0.5")
           svg.appendChild(poly)
 
-          // 顯示選取框
           if (showPoints && isFinite(minX)) {
              const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect")
              rect.setAttribute("x", String(minX - 5))
@@ -771,9 +760,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
-      // =================================================
-      // ✅ 2. 斐波那契 (Fibonacci)
-      // =================================================
+      // ✅ 2. 斐波那契
       if (d.mode === "fib") {
         const x1c = typeof d.l1 === "number" ? ts.logicalToCoordinate(d.l1 as any) : ts.timeToCoordinate(d.t1)
         const x2c = typeof d.l2 === "number" ? ts.logicalToCoordinate(d.l2 as any) : ts.timeToCoordinate(d.t2)
@@ -783,10 +770,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         if (x1c == null || x2c == null || y1c == null || y2c == null) return
         const x1 = Number(x1c), x2 = Number(x2c), y1 = Number(y1c), y2 = Number(y2c)
 
-        // 畫趨勢線 (虛線)
         svg.appendChild(makeLine(x1, y1, x2, y2, color, 1, true))
 
-        // 畫水平 levels
         const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
         const priceDiff = d.p2 - d.p1
         
@@ -795,8 +780,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             const lyc = series.priceToCoordinate(levelPrice)
             if (lyc != null) {
                 const ly = Number(lyc)
-                // 畫橫線 (從左邊界到右邊界? 還是只在 x1, x2 之間? 通常是無限延伸或 x1-x2，這裡做 x1-x2 比較簡潔，或延伸)
-                // 為了 "lightweight" 感覺，我們畫在 x1 到 x2 的寬度，如果太窄可以設定最小寬度
                 const lxStart = Math.min(x1, x2) - 20
                 const lxEnd = Math.max(x1, x2) + 20
                 
@@ -804,8 +787,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                 line.setAttribute("opacity", "0.7")
                 svg.appendChild(line)
                 
-                // 文字標籤 (Level)
-                if (showPoints || !dashed) { // 預覽時可能太亂，可以選擇不顯示
+                if (showPoints || !dashed) {
                     const text = document.createElementNS("http://www.w3.org/2000/svg", "text")
                     text.setAttribute("x", String(lxStart))
                     text.setAttribute("y", String(ly - 2))
@@ -824,9 +806,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         return
       }
 
-      // =================================================
-      // 3. 其他幾何圖形
-      // =================================================
       if (d.mode === "hline") {
         const yc = series.priceToCoordinate(d.p1)
         if (yc == null) return
@@ -904,7 +883,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
     }
   }
 
-  // ... (Mask update logic same as before) ...
   const updateGlobalMask = () => {
     const host = chartsContainerRef.current
     const mask = globalMaskRef.current
@@ -1225,7 +1203,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       chart.timeScale().fitContent()
     })
 
-    // ... (Sync code) ...
     const syncCrosshair = (sourceChart: IChartApi, param: MouseEventParams, sourcePaneIndex: number) => {
       const vline = globalVLineRef.current
       const host = chartsContainerRef.current
@@ -1304,33 +1281,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
     } catch (e) {}
 
-    // =========================================================
-    // ✅ 預覽線更新：增加 Fib 的預覽
-    // =========================================================
     try {
       const c0 = chartInstances.current[0]
       if (c0) {
         const handler = (param: MouseEventParams) => {
           if (!param || !param.point) return
           
-          // Brush mode: 這是用來畫畫的
-          if (drawModeRef.current === "brush" && isBrushDrawingRef.current) {
-             const series = primarySeriesRef.current
-             const p0 = panes.current[0]
-             if (!series || !p0 || !p0.chart) return
-             
-             const logical = p0.chart.timeScale().coordinateToLogical((param.point as any).x)
-             const price = series.coordinateToPrice((param.point as any).y)
-             
-             if (logical != null && price != null && Number.isFinite(price)) {
-                 const currentDrawing = drawingsRef.current[drawingsRef.current.length - 1]
-                 if (currentDrawing && currentDrawing.points) {
-                     currentDrawing.points.push({ l: Number(logical), p: Number(price) })
-                     renderDrawings()
-                 }
-             }
-             return
-          }
+          if (drawModeRef.current === "brush") return 
 
           if (!pendingPointRef.current) return
 
@@ -1368,7 +1325,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             return
           }
 
-          // ✅ 支援 Fib/Rect/Ray
           const dm: DrawingMode = modeNow === "fib" ? "fib" : modeNow === "ray" ? "ray" : modeNow === "rect" ? "rect" : "line"
 
           previewRef.current = {
@@ -1390,9 +1346,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
     } catch (e) {}
 
-    // =========================================================
-    // ✅ 點擊事件：新增 Fib/Brush 支援
-    // =========================================================
     try {
       const c0 = chartInstances.current[0]
       if (c0) {
@@ -1418,7 +1371,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const t = (param as any).time ?? null
           const mode = drawModeRef.current
 
-          // Brush mode handles mouse down/move/up separately
           if (mode === "brush") return
 
           if (mode === "hline") {
@@ -1484,9 +1436,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       }
     } catch (e) {}
 
-    // =========================================================
-    // ✅ 拖曳/筆刷事件 (DOM)
-    // =========================================================
     try {
       const p0 = panes.current[0]
       const chart0 = chartInstances.current[0]
@@ -1514,7 +1463,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const w = container.clientWidth || 1
           const h = container.clientHeight || 1
 
-          // Brush hit test (bounding box)
           if (d.mode === "brush" && d.points) {
              let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity
              d.points.forEach(pt => {
@@ -1526,7 +1474,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                      minY = Math.min(minY, ny); maxY = Math.max(maxY, ny)
                  }
              })
-             // Give it some padding
              return { kind: "rect", rect: { left: minX-5, right: maxX+5, top: minY-5, bottom: maxY+5 }, w, h, p1: {x: minX, y: minY}, p2: {x: maxX, y: maxY} }
           }
 
@@ -1567,12 +1514,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           }
 
           if (d.mode === "rect") {
-            const left = Math.min(x1, x2), right = Math.max(x1, x2)
-            const top = Math.min(y1, y2), bottom = Math.max(y1, y2)
+            const left = Math.min(x1, x2)
+            const right = Math.max(x1, x2)
+            const top = Math.min(y1, y2)
+            const bottom = Math.max(y1, y2)
             return { kind: "rect", p1: { x: x1, y: y1 }, p2: { x: x2, y: y2 }, rect: { left, right, top, bottom }, w, h }
           }
 
-          // Line & Fib usually treated as line for body detection
           return { kind: "line", p1: { x: x1, y: y1 }, p2: { x: x2, y: y2 }, body: { x1: x1, y1: y1, x2: x2, y2: y2 }, w, h }
         }
 
@@ -1586,7 +1534,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             const coords = getDrawingCoords(d)
             if (!coords) return null
 
-            // Brush handling
             if (d.mode === "brush" && (coords as any).rect) {
                 const { left, right, top, bottom } = (coords as any).rect
                 if (mx >= left && mx <= right && my >= top && my <= bottom) {
@@ -1610,11 +1557,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
             if (bestPart) return { idx, part: bestPart, dist: bestDist }
 
-            // Body hit test
             if (d.mode === "rect" && (coords as any).rect) {
               const { left, right, top, bottom } = (coords as any).rect
-              // rect: only hit border for now, or full rect
-              // Check distance to 4 segments
               const d1 = distPointToSegment(mx, my, left, top, right, top)
               const d2 = distPointToSegment(mx, my, right, top, right, bottom)
               const d3 = distPointToSegment(mx, my, right, bottom, left, bottom)
@@ -1657,13 +1601,15 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           // ✅ 筆刷模式：開始畫
           if (drawModeRef.current === "brush") {
               const ts = chart0.timeScale()
+              // Use coordinateToLogical instead of timeToCoordinate to allow unrestricted drawing
               const logical = ts.coordinateToLogical(mx as any)
               const price = series.coordinateToPrice(my as any)
+              
               if (logical != null && price != null) {
                   isBrushDrawingRef.current = true
                   const newDrawing: Drawing = {
                       mode: "brush",
-                      t1: null, p1: 0, t2: null, p2: 0, // dummy
+                      t1: null, p1: 0, t2: null, p2: 0, 
                       color: drawColorRef.current,
                       width: drawWidthRef.current,
                       points: [{ l: Number(logical), p: Number(price) }]
@@ -1672,6 +1618,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                   selectedIdxRef.current = drawingsRef.current.length - 1
                   renderDrawings()
               }
+              try { e.stopPropagation() } catch (err) {}
               return
           }
 
@@ -1703,7 +1650,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
           const d = drawingsRef.current[hit.idx]
           const orig: Drawing = { ...d }
-          if (orig.points) orig.points = [...orig.points] // shallow copy points
+          if (orig.points) orig.points = [...orig.points] 
 
           const ol1 = typeof d.l1 === "number" ? Number(d.l1) : timeToIndex(d.t1)
           const ol2 = typeof d.l2 === "number" ? Number(d.l2) : timeToIndex(d.t2)
@@ -1722,14 +1669,34 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
         domMouseMove = (e: MouseEvent) => {
           if (!series || !chart0) return
-          // Brush drawing handled by chart.crosshairMove, but drag handled here
-          if (drawModeRef.current === "brush") return 
-
-          if (drawModeRef.current !== "mouse") return
-
           const rect = container.getBoundingClientRect()
           const mx = e.clientX - rect.left
           const my = e.clientY - rect.top
+
+          // ✅ 筆刷繪製：獨立處理，並加入嚴格過濾
+          if (drawModeRef.current === "brush" && isBrushDrawingRef.current) {
+             const ts = chart0.timeScale()
+             const logical = ts.coordinateToLogical(mx as any)
+             const price = series.coordinateToPrice(my as any)
+             
+             // ⚠️ 關鍵修正：檢查是否為 null 或 NaN
+             if (logical != null && price != null) {
+                 const l = Number(logical)
+                 const p = Number(price)
+                 
+                 // 確保數值有效才加入
+                 if (Number.isFinite(l) && Number.isFinite(p)) {
+                     const currentDrawing = drawingsRef.current[drawingsRef.current.length - 1]
+                     if (currentDrawing && currentDrawing.points) {
+                         currentDrawing.points.push({ l, p })
+                         renderDrawings()
+                     }
+                 }
+             }
+             return
+          }
+
+          if (drawModeRef.current !== "mouse") return
 
           if (!dragRef.current) {
             const hit = drawingsRef.current.length > 0 ? findHit(mx, my) : null
@@ -1755,7 +1722,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const deltaLogical = Number(logicalNow) - st.startLogical
           const deltaPrice = Number(priceNow) - st.startPrice
 
-          // ✅ 筆刷拖曳
           if (updated.mode === "brush" && updated.points && orig.points) {
               updated.points = orig.points.map(p => ({
                   l: p.l + deltaLogical,
@@ -1766,7 +1732,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
               return
           }
 
-          // 其他物件拖曳
           if (st.part === "p1" || st.part === "p2") {
             if (orig.mode === "hline") {
               updated.p1 = Number(priceNow)
@@ -1785,7 +1750,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
             return
           }
 
-          // Body Move
           if (orig.mode === "hline") {
             updated.p1 = orig.p1 + deltaPrice
             updated.p2 = updated.p1
@@ -1803,7 +1767,6 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         }
 
         domMouseUp = (e: MouseEvent) => {
-          // Brush end
           if (isBrushDrawingRef.current) {
               isBrushDrawingRef.current = false
               return
