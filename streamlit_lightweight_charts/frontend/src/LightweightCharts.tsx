@@ -147,20 +147,31 @@ function ensureGlobalMask(host: HTMLDivElement) {
 }
 
 // ====================================================================
-// 2.1 畫線工具 DOM (Toolbar + SVG overlay)
+// 2.1 畫線工具 DOM (Toolbar + SVG overlay) - [MODIFIED: Draggable & Icons]
 // ====================================================================
 
 type DrawMode = "mouse" | "line" | "ray" | "hline" | "rect"
+
+// SVG Icons 定義
+const ICONS = {
+  drag: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M7 19a2 2 0 100-4 2 2 0 000 4zM7 13a2 2 0 100-4 2 2 0 000 4zM7 7a2 2 0 100-4 2 2 0 000 4zM17 19a2 2 0 100-4 2 2 0 000 4zM17 13a2 2 0 100-4 2 2 0 000 4zM17 7a2 2 0 100-4 2 2 0 000 4z"></path></svg>`,
+  mouse: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"></path><path d="M13 13l6 6"></path></svg>`,
+  line: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="20" x2="20" y2="4"></line><circle cx="4" cy="20" r="2" fill="currentColor"></circle><circle cx="20" cy="4" r="2" fill="currentColor"></circle></svg>`,
+  ray: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="20" x2="20" y2="4"></line><path d="M16 4h4v4"></path><circle cx="4" cy="20" r="2" fill="currentColor"></circle></svg>`,
+  hline: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="8" x2="22" y2="8"></line><line x1="2" y1="16" x2="22" y2="16"></line><circle cx="12" cy="8" r="2" fill="currentColor"></circle><circle cx="12" cy="16" r="2" fill="currentColor"></circle></svg>`,
+  rect: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16"></rect><circle cx="4" cy="4" r="2" fill="currentColor"></circle><circle cx="20" cy="20" r="2" fill="currentColor"></circle></svg>`,
+}
 
 function setToolbarActive(toolbar: HTMLDivElement, mode: DrawMode) {
   const btns = toolbar.querySelectorAll("button[data-mode]") as NodeListOf<HTMLButtonElement>
   btns.forEach((b) => {
     const m = (b.getAttribute("data-mode") || "mouse") as DrawMode
     const isActive = m === mode
+    // 淺色風格：Active 為藍色背景，Inactive 為透明
     Object.assign(b.style, {
-      background: isActive ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.08)",
-      border: isActive ? "1px solid rgba(255,255,255,0.35)" : "1px solid rgba(255,255,255,0.18)",
-      color: isActive ? "#fff" : "rgba(255,255,255,0.85)",
+      background: isActive ? "#e6f7ff" : "transparent",
+      color: isActive ? "#1890ff" : "#555",
+      border: isActive ? "1px solid #1890ff" : "1px solid transparent",
     })
   })
 }
@@ -177,39 +188,101 @@ function ensureDrawToolbar(
   setVP: (v: boolean) => void
 ) {
   let toolbar = host.querySelector(".draw-toolbar") as HTMLDivElement | null
+  
   if (!toolbar) {
     toolbar = document.createElement("div")
     toolbar.className = "draw-toolbar"
+    
+    // ✅ 樣式設定：浮動白底圓角 (Pill Style)
     Object.assign(toolbar.style, {
       position: "absolute",
-      top: "8px",
-      right: "8px",
+      // 初始位置
+      top: "20px", 
+      left: "100px", 
       zIndex: "1100",
       display: "flex",
-      gap: "6px",
-      padding: "6px",
-      borderRadius: "8px",
-      background: "rgba(15, 15, 15, 0.55)",
-      border: "1px solid rgba(255,255,255,0.12)",
-      backdropFilter: "blur(6px)",
+      gap: "4px",
+      padding: "4px 8px",
+      borderRadius: "20px", // 圓角
+      background: "#ffffff",
+      boxShadow: "0 4px 12px rgba(0,0,0,0.15)", // 陰影
+      border: "1px solid #e0e0e0",
       pointerEvents: "auto",
       userSelect: "none",
       alignItems: "center",
+      color: "#333",
     })
 
-    const mkBtn = (label: string, mode: DrawMode) => {
+    // ------------------------------------
+    // 1. 拖曳手柄 (Drag Handle)
+    // ------------------------------------
+    const dragHandle = document.createElement("div")
+    dragHandle.innerHTML = ICONS.drag
+    Object.assign(dragHandle.style, {
+      cursor: "grab",
+      padding: "4px",
+      display: "flex",
+      alignItems: "center",
+      color: "#999",
+      marginRight: "4px",
+    })
+    
+    // 拖曳邏輯
+    let isDragging = false
+    let startX = 0, startY = 0
+    let startLeft = 0, startTop = 0
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDragging || !toolbar) return
+      e.preventDefault()
+      const dx = e.clientX - startX
+      const dy = e.clientY - startY
+      toolbar.style.left = `${startLeft + dx}px`
+      toolbar.style.top = `${startTop + dy}px`
+    }
+
+    const onMouseUp = () => {
+      isDragging = false
+      document.removeEventListener("mousemove", onMouseMove)
+      document.removeEventListener("mouseup", onMouseUp)
+      if(dragHandle) dragHandle.style.cursor = "grab"
+    }
+
+    dragHandle.addEventListener("mousedown", (e) => {
+      isDragging = true
+      startX = e.clientX
+      startY = e.clientY
+      startLeft = toolbar!.offsetLeft
+      startTop = toolbar!.offsetTop
+      dragHandle.style.cursor = "grabbing"
+      document.addEventListener("mousemove", onMouseMove)
+      document.addEventListener("mouseup", onMouseUp)
+    })
+
+    toolbar.appendChild(dragHandle)
+
+    // ------------------------------------
+    // 2. 工具按鈕 (Icons)
+    // ------------------------------------
+    const mkBtn = (iconHtml: string, mode: DrawMode, title: string) => {
       const b = document.createElement("button")
       b.type = "button"
-      b.textContent = label
+      b.innerHTML = iconHtml
+      b.title = title
       b.setAttribute("data-mode", mode)
       Object.assign(b.style, {
-        fontSize: "12px",
-        padding: "6px 10px",
+        width: "32px",
+        height: "32px",
+        padding: "4px",
         borderRadius: "6px",
         cursor: "pointer",
-        background: "rgba(255,255,255,0.08)",
-        border: "1px solid rgba(255,255,255,0.18)",
-        color: "rgba(255,255,255,0.85)",
+        background: "transparent",
+        border: "1px solid transparent",
+        color: "#555",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        transition: "all 0.2s",
       })
       b.addEventListener("click", () => {
         setMode(mode)
@@ -218,65 +291,70 @@ function ensureDrawToolbar(
       return b
     }
 
+    toolbar.appendChild(mkBtn(ICONS.mouse, "mouse", "滑鼠"))
+    toolbar.appendChild(mkBtn(ICONS.line, "line", "直線"))
+    toolbar.appendChild(mkBtn(ICONS.ray, "ray", "延長線"))
+    toolbar.appendChild(mkBtn(ICONS.hline, "hline", "水平線"))
+    toolbar.appendChild(mkBtn(ICONS.rect, "rect", "方框"))
+
+    // 分隔線
     const divider = () => {
       const d = document.createElement("div")
       Object.assign(d.style, {
         width: "1px",
-        height: "22px",
-        background: "rgba(255,255,255,0.18)",
-        margin: "0 4px",
+        height: "20px",
+        background: "#e0e0e0",
+        margin: "0 6px",
       })
       return d
     }
+    toolbar.appendChild(divider())
 
-    const mkLabel = (txt: string) => {
-      const s = document.createElement("span")
-      s.textContent = txt
-      Object.assign(s.style, {
-        fontSize: "12px",
-        color: "rgba(255,255,255,0.75)",
-        marginLeft: "2px",
-        marginRight: "2px",
-      })
-      return s
-    }
-
+    // ------------------------------------
+    // 3. 顏色、粗細、分價圖
+    // ------------------------------------
+    
+    // 顏色
+    const colorWrap = document.createElement("div")
+    Object.assign(colorWrap.style, {
+      display: "flex", alignItems: "center", justifyContent: "center",
+      width: "24px", height: "24px", borderRadius: "50%",
+      border: "1px solid #ddd", overflow: "hidden", cursor: "pointer",
+      position: "relative"
+    })
     const colorInput = document.createElement("input")
     colorInput.type = "color"
     colorInput.value = getColor()
     Object.assign(colorInput.style, {
-      width: "28px",
-      height: "22px",
-      padding: "0",
-      border: "1px solid rgba(255,255,255,0.18)",
-      borderRadius: "6px",
-      background: "transparent",
-      cursor: "pointer",
+      position: "absolute",
+      top: "-50%", left: "-50%",
+      width: "200%", height: "200%",
+      padding: 0, border: "none", cursor: "pointer",
     })
     colorInput.addEventListener("input", () => {
       setColor(colorInput.value)
     })
+    colorWrap.appendChild(colorInput)
+    toolbar.appendChild(colorWrap)
 
+    // 粗細
     const widthSel = document.createElement("select")
     Object.assign(widthSel.style, {
-      height: "22px",
+      height: "24px",
       fontSize: "12px",
-      borderRadius: "6px",
-      background: "#ffffff",
-      color: "#000000", // ✅ 字改黑色
-      border: "1px solid rgba(255,255,255,0.18)",
-      padding: "0 6px",
+      borderRadius: "4px",
+      background: "#f5f5f5",
+      color: "#333",
+      border: "1px solid #ddd",
+      padding: "0 2px",
       cursor: "pointer",
       outline: "none",
+      marginLeft: "6px"
     })
-    ;[1, 2, 3, 4, 5, 6].forEach((n) => {
+    ;[1, 2, 3, 4, 5].forEach((n) => {
       const opt = document.createElement("option")
       opt.value = String(n)
-      opt.textContent = String(n)
-      Object.assign(opt.style, {
-        backgroundColor: "#ffffff",
-        color: "#000000", // ✅ option 字改黑色
-      })
+      opt.textContent = `${n}px`
       widthSel.appendChild(opt)
     })
     widthSel.value = String(getWidth())
@@ -284,28 +362,33 @@ function ensureDrawToolbar(
       const v = parseInt(widthSel.value, 10)
       if (Number.isFinite(v)) setWidth(v)
     })
+    toolbar.appendChild(widthSel)
 
-    // ✅ 分價圖按鈕（開/關）
+    toolbar.appendChild(divider())
+
+    // 分價圖按鈕
     const vpBtn = document.createElement("button")
     vpBtn.type = "button"
     vpBtn.className = "vp-toggle"
+    vpBtn.title = "切換分價圖"
+    vpBtn.textContent = "VP"
     Object.assign(vpBtn.style, {
-      fontSize: "12px",
-      padding: "6px 10px",
-      borderRadius: "6px",
+      fontSize: "11px",
+      fontWeight: "bold",
+      padding: "2px 6px",
+      height: "24px",
+      borderRadius: "4px",
       cursor: "pointer",
-      background: "rgba(255,255,255,0.08)",
-      border: "1px solid rgba(255,255,255,0.18)",
-      color: "rgba(255,255,255,0.85)",
-      marginLeft: "2px",
+      background: "#f5f5f5",
+      border: "1px solid #ddd",
+      color: "#555",
     })
     const syncVPBtn = () => {
       const on = getVP()
-      vpBtn.textContent = on ? "分價圖：開" : "分價圖：關"
       Object.assign(vpBtn.style, {
-        background: on ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.08)",
-        border: on ? "1px solid rgba(255,255,255,0.35)" : "1px solid rgba(255,255,255,0.18)",
-        color: on ? "#fff" : "rgba(255,255,255,0.85)",
+        background: on ? "#1890ff" : "#f5f5f5",
+        color: on ? "#fff" : "#555",
+        border: on ? "1px solid #1890ff" : "1px solid #ddd"
       })
     }
     vpBtn.addEventListener("click", () => {
@@ -313,22 +396,7 @@ function ensureDrawToolbar(
       syncVPBtn()
     })
     syncVPBtn()
-
-    // ✅ 中文
-    toolbar.appendChild(mkBtn("滑鼠", "mouse"))
-    toolbar.appendChild(mkBtn("直線", "line"))
-    toolbar.appendChild(mkBtn("延長線", "ray"))
-    toolbar.appendChild(mkBtn("水平線", "hline"))
-    toolbar.appendChild(mkBtn("方框", "rect"))
-
-    toolbar.appendChild(divider())
     toolbar.appendChild(vpBtn)
-
-    toolbar.appendChild(divider())
-    toolbar.appendChild(mkLabel("顏色"))
-    toolbar.appendChild(colorInput)
-    toolbar.appendChild(mkLabel("粗細"))
-    toolbar.appendChild(widthSel)
 
     const style = getComputedStyle(host)
     if (style.position === "static") host.style.position = "relative"
@@ -337,19 +405,23 @@ function ensureDrawToolbar(
 
   // 同步 UI 狀態
   setToolbarActive(toolbar, getMode())
+  
+  // 同步顏色選擇器值 (如果外部更改了)
   const ci = toolbar.querySelector('input[type="color"]') as HTMLInputElement | null
   if (ci) ci.value = getColor()
+  
+  // 同步粗細
   const ws = toolbar.querySelector("select") as HTMLSelectElement | null
   if (ws) ws.value = String(getWidth())
 
+  // 同步 VP 按鈕
   const vpBtn = toolbar.querySelector(".vp-toggle") as HTMLButtonElement | null
   if (vpBtn) {
     const on = getVP()
-    vpBtn.textContent = on ? "分價圖：開" : "分價圖：關"
     Object.assign(vpBtn.style, {
-      background: on ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.08)",
-      border: on ? "1px solid rgba(255,255,255,0.35)" : "1px solid rgba(255,255,255,0.18)",
-      color: on ? "#fff" : "rgba(255,255,255,0.85)",
+      background: on ? "#1890ff" : "#f5f5f5",
+      color: on ? "#fff" : "#555",
+      border: on ? "1px solid #1890ff" : "1px solid #ddd"
     })
   }
 
