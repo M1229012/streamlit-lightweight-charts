@@ -459,35 +459,34 @@ type DragState = {
   part: DragPart
 }
 
-// ✅ 筆刷平滑化：使用中點貝茲曲線 (Midpoint Quadratic Bezier)
-function getSvgPathFromPoints(points: {x:number, y:number}[]): string {
-    if (points.length === 0) return ""
-    if (points.length === 1) return `M ${points[0].x} ${points[0].y} L ${points[0].x} ${points[0].y}`
-    if (points.length === 2) return `M ${points[0].x} ${points[0].y} L ${points[1].x} ${points[1].y}`
+// ✅ 筆刷平滑化：使用 Catmull-Rom to Bezier 演算法，產生極致圓滑的曲線
+function getSvgPathFromPoints(points: { x: number; y: number }[]): string {
+  const n = points.length
+  if (n === 0) return ""
+  if (n === 1) return `M ${points[0].x} ${points[0].y}`
+  if (n === 2) return `M ${points[0].x} ${points[0].y} L ${points[1].x} ${points[1].y}`
 
-    let d = `M ${points[0].x} ${points[0].y}`
+  // Catmull-Rom spline -> Cubic Bezier
+  const tension = 0.5
+  let d = `M ${points[0].x} ${points[0].y}`
 
-    // 從第一點開始，遍歷到倒數第二點
-    for (let i = 0; i < points.length - 1; i++) {
-        const p1 = points[i]
-        const p2 = points[i + 1]
-        
-        // 找出兩點的中點
-        const midX = (p1.x + p2.x) / 2
-        const midY = (p1.y + p2.y) / 2
-        
-        // 使用 quadratic bezier curve (Q)
-        // 控制點是 p1，終點是 mid
-        d += ` Q ${p1.x} ${p1.y} ${midX} ${midY}`
-    }
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = points[i - 1] || points[i]
+    const p1 = points[i]
+    const p2 = points[i + 1]
+    const p3 = points[i + 2] || p2
 
-    // 連接最後一點
-    const last = points[points.length - 1]
-    d += ` L ${last.x} ${last.y}`
+    const cp1x = p1.x + (p2.x - p0.x) * (tension / 6)
+    const cp1y = p1.y + (p2.y - p0.y) * (tension / 6)
 
-    return d
+    const cp2x = p2.x - (p3.x - p1.x) * (tension / 6)
+    const cp2y = p2.y - (p3.y - p1.y) * (tension / 6)
+
+    d += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`
+  }
+
+  return d
 }
-
 
 const LightweightChartsMultiplePanes: React.VFC = () => {
   const renderData = useRenderData()
@@ -736,7 +735,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const width = d.width
       const showPoints = drawModeRef.current === "mouse" && (isSelected || dashed)
 
-      // ✅ 1. 筆刷 (Brush) - 嚴格過濾無效點 + 中點貝茲曲線平滑化
+      // ✅ 1. 筆刷 (Brush) - 嚴格過濾無效點 + Catmull-Rom 插值平滑化
       if (d.mode === "brush" && d.points && d.points.length > 0) {
         const pts: {x:number, y:number}[] = []
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
@@ -762,7 +761,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         if (pts.length > 1) {
           const path = document.createElementNS("http://www.w3.org/2000/svg", "path")
           
-          // ✅ 使用 Midpoint Quadratic Bezier 平滑算法
+          // ✅ 使用 Catmull-Rom 平滑算法
           const dStr = getSvgPathFromPoints(pts)
 
           path.setAttribute("d", dStr)
@@ -771,6 +770,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           path.setAttribute("stroke-width", String(width))
           path.setAttribute("stroke-linejoin", "round")
           path.setAttribute("stroke-linecap", "round")
+          // ✅ 增加幾何精度，讓曲線更圓滑
+          path.setAttribute("shape-rendering", "geometricPrecision")
           path.setAttribute("vector-effect", "non-scaling-stroke")
           if (dashed) path.setAttribute("opacity", "0.5")
           svg.appendChild(path)
@@ -1707,7 +1708,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const mx = e.clientX - rect.left
           const my = e.clientY - rect.top
 
-          // ✅ 筆刷繪製：加入距離檢測 + 嚴格過濾
+          // ✅ 筆刷繪製：加入距離檢測 (5px) + 同一 K 棒更新
           if (drawModeRef.current === "brush" && isBrushDrawingRef.current) {
              
              // 1. 檢查與上一點的螢幕距離，小於 5px 則忽略 (防止過密導致方塊感)
@@ -1727,8 +1728,17 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
                  // 確保數值有效
                  if (Number.isFinite(l) && Number.isFinite(p)) {
                      const currentDrawing = drawingsRef.current[drawingsRef.current.length - 1]
-                     if (currentDrawing && currentDrawing.points) {
-                         currentDrawing.points.push({ l, p })
+                     if (currentDrawing && currentDrawing.points && currentDrawing.points.length > 0) {
+                         const pts = currentDrawing.points
+                         const last = pts[pts.length - 1]
+
+                         // ✅ 核心：如果 logical 沒變（同一根K棒），不要 push，改成更新最後一點
+                         // 這樣 X 不會在同一格一直堆點造成直上直下的「方形階梯」
+                         if (Math.abs(l - last.l) < 1e-9) {
+                             last.p = p
+                         } else {
+                             pts.push({ l, p })
+                         }
                          lastBrushPointRef.current = {x: mx, y: my} // 更新最後點
                          renderDrawings()
                      }
