@@ -459,6 +459,34 @@ type DragState = {
   part: DragPart
 }
 
+// ✅ 貝茲曲線平滑化演算法 (Catmull-Rom to Bezier 簡化版)
+function getSvgPathFromPoints(points: {x:number, y:number}[]): string {
+    if (points.length === 0) return ""
+    if (points.length === 1) return `M ${points[0].x} ${points[0].y} Z`
+
+    let d = `M ${points[0].x} ${points[0].y}`
+
+    // 使用 Catmull-Rom 樣條插值
+    // 簡單版：取中點作為控制點
+    for (let i = 0; i < points.length - 1; i++) {
+        const p0 = i > 0 ? points[i - 1] : points[0]
+        const p1 = points[i]
+        const p2 = points[i + 1]
+        const p3 = i !== points.length - 2 ? points[i + 2] : p2
+
+        const cp1x = p1.x + (p2.x - p0.x) / 6
+        const cp1y = p1.y + (p2.y - p0.y) / 6
+
+        const cp2x = p2.x - (p3.x - p1.x) / 6
+        const cp2y = p2.y - (p3.y - p1.y) / 6
+
+        d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`
+    }
+
+    return d
+}
+
+
 const LightweightChartsMultiplePanes: React.VFC = () => {
   const renderData = useRenderData()
   const chartsData = renderData.args["charts"] || []
@@ -492,6 +520,9 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
   const selectedIdxRef = useRef<number>(-1)
 
   const isBrushDrawingRef = useRef<boolean>(false)
+  
+  // ✅ 紀錄上一個畫筆點的螢幕坐標 (用來過濾太近的點)
+  const lastBrushPointRef = useRef<{x:number, y:number} | null>(null)
 
   const chartElRefs = useMemo(() => {
     return Array(chartsData.length)
@@ -703,7 +734,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const width = d.width
       const showPoints = drawModeRef.current === "mouse" && (isSelected || dashed)
 
-      // ✅ 1. 筆刷 (Brush) - 嚴格過濾無效點 + 二次貝茲曲線平滑化
+      // ✅ 1. 筆刷 (Brush) - 使用 Catmull-Rom 插值生成平滑曲線
       if (d.mode === "brush" && d.points && d.points.length > 0) {
         const pts: {x:number, y:number}[] = []
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
@@ -729,20 +760,8 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         if (pts.length > 1) {
           const path = document.createElementNS("http://www.w3.org/2000/svg", "path")
           
-          // 平滑化算法: 使用二次貝茲曲線連接中點
-          let dStr = `M ${pts[0].x} ${pts[0].y}`
-          
-          for (let i = 1; i < pts.length - 1; i++) {
-             const cp = pts[i]
-             const next = pts[i+1]
-             const ep = {
-                 x: (cp.x + next.x) / 2,
-                 y: (cp.y + next.y) / 2
-             }
-             dStr += ` Q ${cp.x} ${cp.y} ${ep.x} ${ep.y}`
-          }
-          // 連接最後一點
-          dStr += ` L ${pts[pts.length - 1].x} ${pts[pts.length - 1].y}`
+          // ✅ 使用 Catmull-Rom 平滑算法
+          const dStr = getSvgPathFromPoints(pts)
 
           path.setAttribute("d", dStr)
           path.setAttribute("fill", "none")
@@ -991,6 +1010,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         pendingPointRef.current = null
         previewRef.current = null
         isBrushDrawingRef.current = false
+        lastBrushPointRef.current = null
         renderDrawings()
         return
       }
@@ -1042,6 +1062,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           pendingPointRef.current = null
           previewRef.current = null
           isBrushDrawingRef.current = false
+          lastBrushPointRef.current = null
           renderDrawings()
         },
         () => drawColorRef.current,
@@ -1611,12 +1632,13 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           // ✅ 筆刷模式：開始畫
           if (drawModeRef.current === "brush") {
               const ts = chart0.timeScale()
-              // Use coordinateToLogical instead of timeToCoordinate to allow unrestricted drawing
               const logical = ts.coordinateToLogical(mx as any)
               const price = series.coordinateToPrice(my as any)
               
               if (logical != null && price != null) {
                   isBrushDrawingRef.current = true
+                  lastBrushPointRef.current = {x: mx, y: my} // 初始化最後點
+
                   const newDrawing: Drawing = {
                       mode: "brush",
                       t1: null, p1: 0, t2: null, p2: 0, 
@@ -1683,22 +1705,29 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           const mx = e.clientX - rect.left
           const my = e.clientY - rect.top
 
-          // ✅ 筆刷繪製：獨立處理，並加入嚴格過濾
+          // ✅ 筆刷繪製：加入距離檢測 + 嚴格過濾
           if (drawModeRef.current === "brush" && isBrushDrawingRef.current) {
+             
+             // 1. 檢查與上一點的螢幕距離，小於2px則忽略 (防止點過密)
+             if (lastBrushPointRef.current) {
+                 const dist = Math.hypot(mx - lastBrushPointRef.current.x, my - lastBrushPointRef.current.y)
+                 if (dist < 2) return
+             }
+             
              const ts = chart0.timeScale()
              const logical = ts.coordinateToLogical(mx as any)
              const price = series.coordinateToPrice(my as any)
              
-             // ⚠️ 關鍵修正：檢查是否為 null 或 NaN
              if (logical != null && price != null) {
                  const l = Number(logical)
                  const p = Number(price)
                  
-                 // 確保數值有效才加入
+                 // 確保數值有效
                  if (Number.isFinite(l) && Number.isFinite(p)) {
                      const currentDrawing = drawingsRef.current[drawingsRef.current.length - 1]
                      if (currentDrawing && currentDrawing.points) {
                          currentDrawing.points.push({ l, p })
+                         lastBrushPointRef.current = {x: mx, y: my} // 更新最後點
                          renderDrawings()
                      }
                  }
@@ -1779,6 +1808,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         domMouseUp = (e: MouseEvent) => {
           if (isBrushDrawingRef.current) {
               isBrushDrawingRef.current = false
+              lastBrushPointRef.current = null
               return
           }
 
