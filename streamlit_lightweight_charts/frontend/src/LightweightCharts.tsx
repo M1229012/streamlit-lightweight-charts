@@ -459,29 +459,31 @@ type DragState = {
   part: DragPart
 }
 
-// ✅ 貝茲曲線平滑化演算法 (Catmull-Rom to Bezier 簡化版)
+// ✅ 筆刷平滑化：使用中點貝茲曲線 (Midpoint Quadratic Bezier)
 function getSvgPathFromPoints(points: {x:number, y:number}[]): string {
     if (points.length === 0) return ""
-    if (points.length === 1) return `M ${points[0].x} ${points[0].y} Z`
+    if (points.length === 1) return `M ${points[0].x} ${points[0].y} L ${points[0].x} ${points[0].y}`
+    if (points.length === 2) return `M ${points[0].x} ${points[0].y} L ${points[1].x} ${points[1].y}`
 
     let d = `M ${points[0].x} ${points[0].y}`
 
-    // 使用 Catmull-Rom 樣條插值
-    // 簡單版：取中點作為控制點
+    // 從第一點開始，遍歷到倒數第二點
     for (let i = 0; i < points.length - 1; i++) {
-        const p0 = i > 0 ? points[i - 1] : points[0]
         const p1 = points[i]
         const p2 = points[i + 1]
-        const p3 = i !== points.length - 2 ? points[i + 2] : p2
-
-        const cp1x = p1.x + (p2.x - p0.x) / 6
-        const cp1y = p1.y + (p2.y - p0.y) / 6
-
-        const cp2x = p2.x - (p3.x - p1.x) / 6
-        const cp2y = p2.y - (p3.y - p1.y) / 6
-
-        d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`
+        
+        // 找出兩點的中點
+        const midX = (p1.x + p2.x) / 2
+        const midY = (p1.y + p2.y) / 2
+        
+        // 使用 quadratic bezier curve (Q)
+        // 控制點是 p1，終點是 mid
+        d += ` Q ${p1.x} ${p1.y} ${midX} ${midY}`
     }
+
+    // 連接最後一點
+    const last = points[points.length - 1]
+    d += ` L ${last.x} ${last.y}`
 
     return d
 }
@@ -734,7 +736,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const width = d.width
       const showPoints = drawModeRef.current === "mouse" && (isSelected || dashed)
 
-      // ✅ 1. 筆刷 (Brush) - 使用 Catmull-Rom 插值生成平滑曲線
+      // ✅ 1. 筆刷 (Brush) - 嚴格過濾無效點 + 中點貝茲曲線平滑化
       if (d.mode === "brush" && d.points && d.points.length > 0) {
         const pts: {x:number, y:number}[] = []
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
@@ -760,7 +762,7 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         if (pts.length > 1) {
           const path = document.createElementNS("http://www.w3.org/2000/svg", "path")
           
-          // ✅ 使用 Catmull-Rom 平滑算法
+          // ✅ 使用 Midpoint Quadratic Bezier 平滑算法
           const dStr = getSvgPathFromPoints(pts)
 
           path.setAttribute("d", dStr)
@@ -1708,10 +1710,10 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
           // ✅ 筆刷繪製：加入距離檢測 + 嚴格過濾
           if (drawModeRef.current === "brush" && isBrushDrawingRef.current) {
              
-             // 1. 檢查與上一點的螢幕距離，小於2px則忽略 (防止點過密)
+             // 1. 檢查與上一點的螢幕距離，小於 5px 則忽略 (防止過密導致方塊感)
              if (lastBrushPointRef.current) {
                  const dist = Math.hypot(mx - lastBrushPointRef.current.x, my - lastBrushPointRef.current.y)
-                 if (dist < 2) return
+                 if (dist < 5) return
              }
              
              const ts = chart0.timeScale()
