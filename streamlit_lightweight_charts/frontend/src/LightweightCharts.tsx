@@ -125,7 +125,7 @@ function ensureGlobalMask(host: HTMLDivElement) {
 }
 
 // ====================================================================
-// 2.1 畫線工具 DOM (SVG Icons & Draggable)
+// 2.1 畫線工具 DOM
 // ====================================================================
 
 type DrawMode = "mouse" | "line" | "ray" | "hline" | "rect" | "fib" | "brush"
@@ -189,7 +189,6 @@ function ensureDrawToolbar(
       color: "#333",
     })
 
-    // Drag Handle
     const dragHandle = document.createElement("div")
     dragHandle.innerHTML = ICONS.drag
     Object.assign(dragHandle.style, {
@@ -234,7 +233,6 @@ function ensureDrawToolbar(
 
     toolbar.appendChild(dragHandle)
 
-    // Icons
     const mkBtn = (iconHtml: string, mode: DrawMode, title: string) => {
       const b = document.createElement("button")
       b.type = "button"
@@ -282,7 +280,6 @@ function ensureDrawToolbar(
     }
     toolbar.appendChild(divider())
 
-    // Color
     const colorWrap = document.createElement("div")
     Object.assign(colorWrap.style, {
       display: "flex", alignItems: "center", justifyContent: "center",
@@ -305,7 +302,6 @@ function ensureDrawToolbar(
     colorWrap.appendChild(colorInput)
     toolbar.appendChild(colorWrap)
 
-    // Width
     const widthSel = document.createElement("select")
     Object.assign(widthSel.style, {
       height: "24px",
@@ -334,7 +330,6 @@ function ensureDrawToolbar(
 
     toolbar.appendChild(divider())
 
-    // VP
     const vpBtn = document.createElement("button")
     vpBtn.type = "button"
     vpBtn.className = "vp-toggle"
@@ -708,22 +703,21 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
       const width = d.width
       const showPoints = drawModeRef.current === "mouse" && (isSelected || dashed)
 
-      // ✅ 1. 筆刷 (Brush) - 嚴格過濾無效點
+      // ✅ 1. 筆刷 (Brush) - 嚴格過濾無效點 + 二次貝茲曲線平滑化
       if (d.mode === "brush" && d.points && d.points.length > 0) {
-        const pts: string[] = []
+        const pts: {x:number, y:number}[] = []
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
 
         d.points.forEach(pt => {
           const xc = ts.logicalToCoordinate(pt.l as any)
           const yc = series.priceToCoordinate(pt.p)
           
-          // ⚠️ 關鍵修正：檢查是否為 null 或 NaN
           if (xc != null && yc != null) {
             const x = Number(xc)
             const y = Number(yc)
             
             if (Number.isFinite(x) && Number.isFinite(y)) {
-                pts.push(`${x},${y}`)
+                pts.push({x, y})
                 if (x < minX) minX = x
                 if (x > maxX) maxX = x
                 if (y < minY) minY = y
@@ -733,16 +727,32 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
         })
 
         if (pts.length > 1) {
-          const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline")
-          poly.setAttribute("points", pts.join(" "))
-          poly.setAttribute("fill", "none")
-          poly.setAttribute("stroke", color)
-          poly.setAttribute("stroke-width", String(width))
-          poly.setAttribute("stroke-linejoin", "round")
-          poly.setAttribute("stroke-linecap", "round")
-          poly.setAttribute("vector-effect", "non-scaling-stroke")
-          if (dashed) poly.setAttribute("opacity", "0.5")
-          svg.appendChild(poly)
+          const path = document.createElementNS("http://www.w3.org/2000/svg", "path")
+          
+          // 平滑化算法: 使用二次貝茲曲線連接中點
+          let dStr = `M ${pts[0].x} ${pts[0].y}`
+          
+          for (let i = 1; i < pts.length - 1; i++) {
+             const cp = pts[i]
+             const next = pts[i+1]
+             const ep = {
+                 x: (cp.x + next.x) / 2,
+                 y: (cp.y + next.y) / 2
+             }
+             dStr += ` Q ${cp.x} ${cp.y} ${ep.x} ${ep.y}`
+          }
+          // 連接最後一點
+          dStr += ` L ${pts[pts.length - 1].x} ${pts[pts.length - 1].y}`
+
+          path.setAttribute("d", dStr)
+          path.setAttribute("fill", "none")
+          path.setAttribute("stroke", color)
+          path.setAttribute("stroke-width", String(width))
+          path.setAttribute("stroke-linejoin", "round")
+          path.setAttribute("stroke-linecap", "round")
+          path.setAttribute("vector-effect", "non-scaling-stroke")
+          if (dashed) path.setAttribute("opacity", "0.5")
+          svg.appendChild(path)
 
           if (showPoints && isFinite(minX)) {
              const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect")
