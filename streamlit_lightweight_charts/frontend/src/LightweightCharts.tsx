@@ -1422,6 +1422,11 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
               l2: Number(logical),
             }
             drawingsRef.current.push(newDrawing)
+            
+            // ✅ 改動：畫完水平線後自動切回滑鼠模式
+            drawModeRef.current = "mouse"
+            if (drawToolbarRef.current) setToolbarActive(drawToolbarRef.current, "mouse")
+            
             renderDrawings()
             return
           }
@@ -1462,6 +1467,11 @@ const LightweightChartsMultiplePanes: React.VFC = () => {
 
           drawingsRef.current.push(newDrawing)
           previewRef.current = null
+          
+          // ✅ 改動：畫完兩點圖形（直線、矩形等）後自動切回滑鼠模式
+          drawModeRef.current = "mouse"
+          if (drawToolbarRef.current) setToolbarActive(drawToolbarRef.current, "mouse")
+
           renderDrawings()
         }
 
